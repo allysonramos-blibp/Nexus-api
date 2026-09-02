@@ -1,0 +1,20 @@
+target/
+*.class
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Uploads locais (dados de usuário, nunca deve ir pro git)
+uploads/
+
+# Variáveis de ambiente locais, se você usar um .env com alguma ferramenta
+.env
+
+# Logs
+*.log
+
+# SO
+.DS_Store
+Thumbs.db
