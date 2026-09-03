@@ -25,55 +25,151 @@ public class SecurityConfig {
     private final RestAuthenticationEntryPoint restAuthenticationEntryPoint;
     private final RestAccessDeniedHandler restAccessDeniedHandler;
 
+    /**
+     * Filtro CORS customizado.
+     *
+     * Ele é executado antes dos filtros do Spring Security,
+     * permitindo que o navegador faça o preflight OPTIONS.
+     */
     @Bean
     public CorsFilter corsFilter() {
         return new CorsFilter();
     }
 
+    /**
+     * Codificador de senha.
+     */
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }
 
+    /**
+     * Provider responsável por localizar o usuário
+     * e validar a senha utilizando BCrypt.
+     */
     @Bean
     public DaoAuthenticationProvider authenticationProvider() {
-        DaoAuthenticationProvider provider = new DaoAuthenticationProvider(userDetailsService);
+
+        DaoAuthenticationProvider provider =
+                new DaoAuthenticationProvider(userDetailsService);
+
         provider.setPasswordEncoder(passwordEncoder());
+
         return provider;
     }
 
+    /**
+     * AuthenticationManager utilizado no login.
+     */
     @Bean
-    public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
+    public AuthenticationManager authenticationManager(
+            AuthenticationConfiguration config
+    ) throws Exception {
+
         return config.getAuthenticationManager();
     }
 
+    /**
+     * Configuração principal do Spring Security.
+     */
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http
+    ) throws Exception {
+
         http
+
+                // API REST não utiliza CSRF
                 .csrf(csrf -> csrf.disable())
-                .cors(cors -> cors.disable()) // Mantém desativado o gerenciamento interno padrão
 
-                // CORREÇÃO: Filtro injetado na primeira posição segura usando uma classe universal do Spring
-                .addFilterBefore(corsFilter(), UsernamePasswordAuthenticationFilter.class)
+                // CORS será tratado pelo nosso CorsFilter
+                .cors(cors -> cors.disable())
 
+                // API stateless: autenticação através do JWT
                 .sessionManagement(session ->
-                        session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                        session.sessionCreationPolicy(
+                                SessionCreationPolicy.STATELESS
+                        )
                 )
-                .exceptionHandling(handling -> handling
-                        .authenticationEntryPoint(restAuthenticationEntryPoint)
-                        .accessDeniedHandler(restAccessDeniedHandler)
+
+                // Tratamento de 401 e 403
+                .exceptionHandling(handling ->
+                        handling
+                                .authenticationEntryPoint(
+                                        restAuthenticationEntryPoint
+                                )
+                                .accessDeniedHandler(
+                                        restAccessDeniedHandler
+                                )
                 )
+
+                // Regras de autorização
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
 
-                        .requestMatchers(HttpMethod.POST, "/auth/login").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/auth").permitAll()
-                        .requestMatchers(HttpMethod.POST, "/users/register").permitAll()
+                        /*
+                         * Preflight CORS
+                         *
+                         * O navegador envia OPTIONS antes de determinadas
+                         * requisições POST/PUT/PATCH/DELETE.
+                         */
+                        .requestMatchers(
+                                HttpMethod.OPTIONS,
+                                "/**"
+                        ).permitAll()
 
+                        /*
+                         * Health check da API
+                         *
+                         * GET /api/auth
+                         */
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/auth"
+                        ).permitAll()
+
+                        /*
+                         * Login
+                         *
+                         * POST /api/auth/login
+                         */
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/auth/login"
+                        ).permitAll()
+
+                        /*
+                         * Cadastro
+                         *
+                         * POST /api/users/register
+                         */
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/users/register"
+                        ).permitAll()
+
+                        /*
+                         * Qualquer outro endpoint exige JWT.
+                         */
                         .anyRequest().authenticated()
                 )
+
+                /*
+                 * JWT precisa executar antes do filtro padrão
+                 * de autenticação por usuário/senha.
+                 */
                 .addFilterBefore(
                         jwtAuthenticationFilter,
+                        UsernamePasswordAuthenticationFilter.class
+                )
+
+                /*
+                 * Nosso CORS precisa ficar antes do JWT.
+                 *
+                 * Isso é especialmente importante para OPTIONS.
+                 */
+                .addFilterBefore(
+                        corsFilter(),
                         UsernamePasswordAuthenticationFilter.class
                 );
 
