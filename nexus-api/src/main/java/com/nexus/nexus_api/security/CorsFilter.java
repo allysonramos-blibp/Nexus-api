@@ -1,19 +1,19 @@
-package com.nexus.nexus_api.security; // Ajuste para o seu pacote correto
+package com.nexus.nexus_api.security;
 
-import jakarta.servlet.*;
+
+// GARANTA ESTES IMPORTS EXATOS:
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.Ordered;
-import org.springframework.core.annotation.Order;
-import org.springframework.stereotype.Component;
-
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 
-@Component
-@Order(Ordered.HIGHEST_PRECEDENCE) // Força este filtro a rodar ANTES de toda a segurança
 public class CorsFilter implements Filter {
 
     @Value("${cors.allowed-origins:http://localhost:5173}")
@@ -21,11 +21,10 @@ public class CorsFilter implements Filter {
 
     @Override
     public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
-            throws IOException, ServletException {
+            throws IOException, ServletException { // Estava dando erro aqui se o import estivesse errado
 
         HttpServletResponse response = (HttpServletResponse) res;
         HttpServletRequest request = (HttpServletRequest) req;
-
         String origin = request.getHeader("Origin");
 
         List<String> allowedOrigins = Arrays.stream(allowedOriginsRaw.split(","))
@@ -33,7 +32,7 @@ public class CorsFilter implements Filter {
                 .filter(o -> !o.isBlank())
                 .toList();
 
-        // Se a origem da requisição estiver na nossa lista permitida, injeta os cabeçalhos
+        // Injeta os cabeçalhos se a origem da requisição bater com a configuração
         if (origin != null && (allowedOrigins.contains(origin) || allowedOrigins.contains("*"))) {
             response.setHeader("Access-Control-Allow-Origin", origin);
         } else if (allowedOrigins.contains("*")) {
@@ -45,7 +44,7 @@ public class CorsFilter implements Filter {
         response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, X-Requested-With");
         response.setHeader("Access-Control-Allow-Credentials", "true");
 
-        // Responde imediatamente às requisições OPTIONS do Preflight com 200 OK sem passar pela segurança
+        // Responde de imediato com 200 OK para o Preflight (OPTIONS) sem bater na segurança
         if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
             response.setStatus(HttpServletResponse.SC_OK);
         } else {
