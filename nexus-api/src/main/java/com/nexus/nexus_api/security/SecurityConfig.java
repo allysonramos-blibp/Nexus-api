@@ -87,51 +87,28 @@ public class SecurityConfig {
 
         http
                 .csrf(csrf -> csrf.disable())
-
                 .cors(cors ->
                         cors.configurationSource(corsConfigurationSource())
                 )
-
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(
                                 SessionCreationPolicy.STATELESS
                         )
                 )
-
                 .exceptionHandling(handling -> handling
-                        .authenticationEntryPoint(
-                                restAuthenticationEntryPoint
-                        )
-                        .accessDeniedHandler(
-                                restAccessDeniedHandler
-                        )
+                        .authenticationEntryPoint(restAuthenticationEntryPoint)
+                        .accessDeniedHandler(restAccessDeniedHandler)
                 )
-
                 .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
 
-                        .requestMatchers(
-                                HttpMethod.OPTIONS,
-                                "/**"
-                        ).permitAll()
-
-                        .requestMatchers(
-                                HttpMethod.POST,
-                                "/api/auth/login"
-                        ).permitAll()
-
-                        .requestMatchers(
-                                HttpMethod.GET,
-                                "/api/auth"
-                        ).permitAll()
-
-                        .requestMatchers(
-                                HttpMethod.POST,
-                                "/api/users/register"
-                        ).permitAll()
+                        // CORREÇÃO 3: Removido o "/api" dos caminhos públicos
+                        .requestMatchers(HttpMethod.POST, "/auth/login").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/auth").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/users/register").permitAll()
 
                         .anyRequest().authenticated()
                 )
-
                 .addFilterBefore(
                         jwtAuthenticationFilter,
                         UsernamePasswordAuthenticationFilter.class
@@ -139,4 +116,5 @@ public class SecurityConfig {
 
         return http.build();
     }
+
 }
