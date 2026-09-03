@@ -14,7 +14,6 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-import org.springframework.security.web.access.channel.ChannelProcessingFilter;
 
 @Configuration
 @EnableWebSecurity
@@ -26,7 +25,6 @@ public class SecurityConfig {
     private final RestAuthenticationEntryPoint restAuthenticationEntryPoint;
     private final RestAccessDeniedHandler restAccessDeniedHandler;
 
-    // Declara o Bean manual do CorsFilter para que o Spring resolva a injeção do @Value
     @Bean
     public CorsFilter corsFilter() {
         return new CorsFilter();
@@ -53,10 +51,10 @@ public class SecurityConfig {
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
-                .cors(cors -> cors.disable()) // Desativa o mecanismo interno padrão
+                .cors(cors -> cors.disable()) // Mantém desativado o gerenciamento interno padrão
 
-                // INJEÇÃO DA PRIORIDADE MÁXIMA: Garante o CORS antes de qualquer filtro do Spring Security
-                .addFilterBefore(corsFilter(), ChannelProcessingFilter.class)
+                // CORREÇÃO: Filtro injetado na primeira posição segura usando uma classe universal do Spring
+                .addFilterBefore(corsFilter(), UsernamePasswordAuthenticationFilter.class)
 
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
@@ -68,7 +66,6 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
 
-                        // Rotas públicas mapeadas na raiz limpa
                         .requestMatchers(HttpMethod.POST, "/auth/login").permitAll()
                         .requestMatchers(HttpMethod.GET, "/auth").permitAll()
                         .requestMatchers(HttpMethod.POST, "/users/register").permitAll()
