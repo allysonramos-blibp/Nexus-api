@@ -86,8 +86,8 @@ public class SecurityConfig {
         http
                 .csrf(csrf -> csrf.disable())
 
-                // CORREÇÃO 1: Adiciona o suporte a CORS integrado com o Bean corsConfigurationSource()
-                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                // Desativa o gerenciamento de CORS interno do Security, pois o nosso CorsFilter já resolve na raiz
+                .cors(cors -> cors.disable())
 
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
@@ -97,12 +97,13 @@ public class SecurityConfig {
                         .accessDeniedHandler(restAccessDeniedHandler)
                 )
                 .authorizeHttpRequests(auth -> auth
-                        // CORREÇÃO 2: Permite todas as requisições OPTIONS do Preflight abertamente
-                        .requestMatchers(org.springframework.web.cors.CorsUtils::isPreFlightRequest).permitAll()
+                        // O CorsFilter cuida das OPTIONS, mas deixamos garantido aqui também
+                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
 
                         .requestMatchers(HttpMethod.POST, "/auth/login").permitAll()
                         .requestMatchers(HttpMethod.GET, "/auth").permitAll()
                         .requestMatchers(HttpMethod.POST, "/users/register").permitAll()
+
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(
@@ -112,6 +113,7 @@ public class SecurityConfig {
 
         return http.build();
     }
+
 
 
 }
