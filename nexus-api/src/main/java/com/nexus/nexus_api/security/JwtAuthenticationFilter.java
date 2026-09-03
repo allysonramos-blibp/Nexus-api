@@ -18,12 +18,17 @@ import java.io.IOException;
 
 @Component
 @RequiredArgsConstructor
-public class JwtAuthenticationFilter extends OncePerRequestFilter {
+public class JwtAuthenticationFilter
+        extends OncePerRequestFilter {
 
-    private static final String HEADER_NAME = "Authorization";
-    private static final String BEARER_PREFIX = "Bearer ";
+    private static final String HEADER_NAME =
+            "Authorization";
+
+    private static final String BEARER_PREFIX =
+            "Bearer ";
 
     private final JwtService jwtService;
+
     private final CustomUserDetailsService userDetailsService;
 
     @Override
@@ -33,35 +38,129 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             @NonNull FilterChain filterChain
     ) throws ServletException, IOException {
 
-        String authHeader = request.getHeader(HEADER_NAME);
+        /*
+         * Preflight CORS não deve passar
+         * pela validação JWT.
+         */
+        if (
+                "OPTIONS".equalsIgnoreCase(
+                        request.getMethod()
+                )
+        ) {
+            filterChain.doFilter(
+                    request,
+                    response
+            );
 
-        if (authHeader == null || !authHeader.startsWith(BEARER_PREFIX)) {
-            filterChain.doFilter(request, response);
             return;
         }
 
-        String token = authHeader.substring(BEARER_PREFIX.length());
+        String authHeader =
+                request.getHeader(
+                        HEADER_NAME
+                );
 
-        try {
-            String email = jwtService.extractEmail(token);
+        /*
+         * Sem Authorization:
+         *
+         * deixa o Spring Security decidir
+         * se o endpoint é público ou protegido.
+         */
+        if (
+                authHeader == null ||
+                        !authHeader.startsWith(
+                                BEARER_PREFIX
+                        )
+        ) {
+            filterChain.doFilter(
+                    request,
+                    response
+            );
 
-            if (email != null && SecurityContextHolder.getContext().getAuthentication() == null) {
-                UserDetails userDetails = userDetailsService.loadUserByUsername(email);
-
-                if (jwtService.isTokenValid(token, userDetails)) {
-                    UsernamePasswordAuthenticationToken authToken =
-                            new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
-                    authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                    SecurityContextHolder.getContext().setAuthentication(authToken);
-                }
-            }
-        } catch (JwtException | IllegalArgumentException e) {
-            // Token malformado, expirado ou com assinatura inválida: simplesmente não autentica.
-            // A cadeia de segurança vai barrar o acesso a rotas protegidas via
-            // RestAuthenticationEntryPoint (401), sem expor detalhes do erro aqui.
-            SecurityContextHolder.clearContext();
+            return;
         }
 
-        filterChain.doFilter(request, response);
+        String token =
+                authHeader
+                        .substring(
+                                BEARER_PREFIX.length()
+                        )
+                        .trim();
+
+        /*
+         * Bearer vazio.
+         */
+        if (token.isBlank()) {
+            filterChain.doFilter(
+                    request,
+                    response
+            );
+
+            return;
+        }
+
+        try {
+            String email =
+                    jwtService.extractEmail(
+                            token
+                    );
+
+            if (
+                    email != null &&
+                            SecurityContextHolder
+                                    .getContext()
+                                    .getAuthentication() == null
+            ) {
+
+                UserDetails userDetails =
+                        userDetailsService
+                                .loadUserByUsername(
+                                        email
+                                );
+
+                if (
+                        jwtService.isTokenValid(
+                                token,
+                                userDetails
+                        )
+                ) {
+
+                    UsernamePasswordAuthenticationToken authToken =
+                            new UsernamePasswordAuthenticationToken(
+                                    userDetails,
+                                    null,
+                                    userDetails.getAuthorities()
+                            );
+
+                    authToken.setDetails(
+                            new WebAuthenticationDetailsSource()
+                                    .buildDetails(request)
+                    );
+
+                    SecurityContextHolder
+                            .getContext()
+                            .setAuthentication(
+                                    authToken
+                            );
+                }
+            }
+
+        } catch (
+                JwtException |
+                IllegalArgumentException e
+        ) {
+
+            /*
+             * Token inválido não deve derrubar
+             * o servidor.
+             */
+            SecurityContextHolder
+                    .clearContext();
+        }
+
+        filterChain.doFilter(
+                request,
+                response
+        );
     }
 }
