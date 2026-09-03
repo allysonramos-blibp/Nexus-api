@@ -39,14 +39,9 @@ public class CorsFilter implements Filter {
                                 allowedOriginsRaw.split(",")
                         )
                         .map(String::trim)
-                        .filter(
-                                value -> !value.isBlank()
-                        )
+                        .filter(value -> !value.isBlank())
                         .toList();
 
-        /*
-         * Libera somente as origens configuradas.
-         */
         if (
                 origin != null &&
                         allowedOrigins.contains(origin)
@@ -87,9 +82,6 @@ public class CorsFilter implements Filter {
                 "Authorization"
         );
 
-        /*
-         * Preflight.
-         */
         if (
                 "OPTIONS".equalsIgnoreCase(
                         request.getMethod()
@@ -98,7 +90,6 @@ public class CorsFilter implements Filter {
             response.setStatus(
                     HttpServletResponse.SC_OK
             );
-
             return;
         }
 
