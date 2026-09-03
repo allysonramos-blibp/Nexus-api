@@ -82,31 +82,27 @@ public class SecurityConfig {
 
 
     @Bean
-    public SecurityFilterChain securityFilterChain(
-            HttpSecurity http) throws Exception {
-
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
-                .cors(cors ->
-                        cors.configurationSource(corsConfigurationSource())
-                )
+
+                // CORREÇÃO 1: Adiciona o suporte a CORS integrado com o Bean corsConfigurationSource()
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+
                 .sessionManagement(session ->
-                        session.sessionCreationPolicy(
-                                SessionCreationPolicy.STATELESS
-                        )
+                        session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 )
                 .exceptionHandling(handling -> handling
                         .authenticationEntryPoint(restAuthenticationEntryPoint)
                         .accessDeniedHandler(restAccessDeniedHandler)
                 )
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                        // CORREÇÃO 2: Permite todas as requisições OPTIONS do Preflight abertamente
+                        .requestMatchers(org.springframework.web.cors.CorsUtils::isPreFlightRequest).permitAll()
 
-                        // CORREÇÃO 3: Removido o "/api" dos caminhos públicos
                         .requestMatchers(HttpMethod.POST, "/auth/login").permitAll()
                         .requestMatchers(HttpMethod.GET, "/auth").permitAll()
                         .requestMatchers(HttpMethod.POST, "/users/register").permitAll()
-
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(
@@ -116,5 +112,6 @@ public class SecurityConfig {
 
         return http.build();
     }
+
 
 }
