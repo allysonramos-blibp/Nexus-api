@@ -23,12 +23,14 @@ public class JwtService {
     private final long expirationMs;
 
     public JwtService(
-            @Value("${jwt.secret}") String base64Secret,
+            @Value("${jwt.secret}") String secret,
             @Value("${jwt.expiration-ms}") long expirationMs
     ) {
-        this.signingKey = Keys.hmacShaKeyFor(java.util.Base64.getDecoder().decode(base64Secret));
+        // Alinhado para ler os bytes diretamente do texto puro
+        this.signingKey = Keys.hmacShaKeyFor(secret.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         this.expirationMs = expirationMs;
     }
+
 
     public String generateToken(UserPrincipal principal) {
         Date now = new Date();
