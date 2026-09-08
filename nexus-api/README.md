@@ -20,7 +20,7 @@ Spring Boot 4.1.0 (Spring Framework 7) + Java 21 + PostgreSQL + JWT.
 | Financeiro | `/transactions` (+ `PATCH /{id}/concluir` p/ confirmar pendência), `/categories` |
 | Treinos | `/workouts`, `/workout-goals` |
 | Estudos — Planos/Matérias/Assuntos | `/study-plans`, `/subjects`, `/topics` |
-| Estudos — Questões/Respostas | `/questions`, `/answers` |
+| Estudos — Questões/Respostas | `/questions`, `/answers` (+ `POST /questions/extract-pdf`, `POST /topics/{id}/questions/bulk`) |
 | Estudos — Caderno de Erros | `/study-errors` |
 | Estudos — Simulados | `/mock-exams` |
 | Estudos — Estatísticas | `/study-stats` |
@@ -147,6 +147,25 @@ CORS_ALLOWED_ORIGINS=https://app.seudominio.com
 - Categorias agora têm endpoint próprio (`/api/categories`) — o campo
   `category_id` em `financial_transactions` já existia no modelo, só não tinha
   como ser preenchido antes.
+
+## Importação de questões por PDF
+
+`POST /api/questions/extract-pdf` (multipart, campo `file`) extrai texto do PDF
+(Apache PDFBox) e manda pra Claude estruturar em JSON — não salva nada, só devolve
+uma prévia pro frontend revisar. Depois de confirmado, `POST
+/api/topics/{topicId}/questions/bulk` salva a lista final de uma vez.
+
+- Só funciona com PDF de **texto selecionável** — PDF escaneado (imagem) não tem
+  texto pra extrair.
+- Limite de ~60.000 caracteres por arquivo — PDFs maiores (provas muito longas)
+  precisam ser divididos em partes antes de importar. O erro retornado já explica
+  isso ao usuário.
+- O gabarito é resolvido pela IA mesmo quando está numa lista separada no fim do
+  documento (formato comum de provas: "1-A 2-C 3-D..."), cruzando o número da
+  questão com a letra e gravando o texto exato da alternativa correspondente —
+  é assim que `AnswerService` valida resposta certa/errada (texto exato, não letra).
+- Usa a mesma `ANTHROPIC_API_KEY`/`ANTHROPIC_WORKSPACE_ID` do chat de IA — sem
+  configuração adicional.
 
 ## Observações de arquitetura
 

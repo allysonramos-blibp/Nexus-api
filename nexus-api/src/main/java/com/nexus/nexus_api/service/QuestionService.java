@@ -8,6 +8,7 @@ import com.nexus.nexus_api.repository.QuestionRepository;
 import com.nexus.nexus_api.util.SecurityUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -19,10 +20,8 @@ public class QuestionService {
     private final QuestionRepository questionRepository;
     private final TopicService topicService;
 
-    public Question create(Long topicId, QuestionRequest request) {
-        Topic topic = topicService.findByIdOwnedByCurrentUser(topicId);
-
-        Question question = Question.builder()
+    private Question build(Topic topic, QuestionRequest request) {
+        return Question.builder()
                 .numero(request.numero())
                 .enunciado(request.enunciado())
                 .alternativas(new ArrayList<>(request.alternativas()))
@@ -33,8 +32,19 @@ public class QuestionService {
                 .ano(request.ano())
                 .topic(topic)
                 .build();
+    }
 
-        return questionRepository.save(question);
+    public Question create(Long topicId, QuestionRequest request) {
+        Topic topic = topicService.findByIdOwnedByCurrentUser(topicId);
+        return questionRepository.save(build(topic, request));
+    }
+
+    /** Checa a dono do tópico uma vez só e salva todas as questões em uma transação. */
+    @Transactional
+    public List<Question> createBulk(Long topicId, List<QuestionRequest> requests) {
+        Topic topic = topicService.findByIdOwnedByCurrentUser(topicId);
+        List<Question> questions = requests.stream().map(r -> build(topic, r)).toList();
+        return questionRepository.saveAll(questions);
     }
 
     public List<Question> listByTopic(Long topicId) {
