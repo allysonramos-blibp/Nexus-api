@@ -1,5 +1,6 @@
 package com.nexus.nexus_api.dto;
 
+import com.nexus.nexus_api.model.TransactionStatus;
 import com.nexus.nexus_api.model.TransactionType;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -21,5 +22,12 @@ public record FinancialTransactionRequest(
         TransactionType tipo,
 
         @NotNull(message = "A data é obrigatória.")
-        LocalDate data
+        LocalDate data,
+
+        // Opcional — null vira CONCLUIDA no service (compatível com quem já chamava
+        // esse endpoint antes de o conceito de pendência existir).
+        TransactionStatus status,
+
+        // Opcional — categoria do lançamento, dona precisa ser o mesmo usuário.
+        Long categoryId
 ) {}

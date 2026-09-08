@@ -17,7 +17,7 @@ Spring Boot 4.1.0 (Spring Framework 7) + Java 21 + PostgreSQL + JWT.
 |---|---|
 | Autenticação | `/auth/login`, `/auth` (healthcheck), `/users/register` |
 | Tarefas / Edital | `/tasks` |
-| Financeiro | `/transactions` |
+| Financeiro | `/transactions` (+ `PATCH /{id}/concluir` p/ confirmar pendência), `/categories` |
 | Treinos | `/workouts`, `/workout-goals` |
 | Estudos — Planos/Matérias/Assuntos | `/study-plans`, `/subjects`, `/topics` |
 | Estudos — Questões/Respostas | `/questions`, `/answers` |
@@ -133,6 +133,20 @@ CORS_ALLOWED_ORIGINS=https://app.seudominio.com
   histórico do git.
 - `application.properties` não tem mais nenhuma credencial real hardcoded — só
   placeholders de desenvolvimento local, que não fazem mal se vazarem.
+
+## Notas de migração — Financeiro (contas a pagar/receber e categorias)
+
+- `financial_transactions` ganhou uma coluna `status` (`PENDENTE`/`CONCLUIDA`).
+  Como o schema é atualizado via `ddl-auto=update` (sem migration/backfill),
+  linhas gravadas antes dessa mudança ficam com `status = NULL` no banco — a API
+  trata `NULL` como `CONCLUIDA` na resposta (era o comportamento implícito de
+  antes), então nada quebra, mas se quiser deixar o banco "limpo" pode rodar:
+  ```sql
+  UPDATE financial_transactions SET status = 'CONCLUIDA' WHERE status IS NULL;
+  ```
+- Categorias agora têm endpoint próprio (`/api/categories`) — o campo
+  `category_id` em `financial_transactions` já existia no modelo, só não tinha
+  como ser preenchido antes.
 
 ## Observações de arquitetura
 

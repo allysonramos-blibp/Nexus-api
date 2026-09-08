@@ -33,6 +33,13 @@ public class FinancialTransaction {
     @Column(nullable = false)
     private TransactionType tipo;
 
+    // Nullable de propósito: linhas existentes antes desta coluna existir ficam com
+    // status NULL no banco (ddl-auto=update não faz backfill) — tratamos NULL como
+    // CONCLUIDA na camada de resposta (FinancialTransactionResponse), não aqui.
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    private TransactionStatus status = TransactionStatus.CONCLUIDA;
+
     @Column(nullable = false)
     private LocalDate data;
 

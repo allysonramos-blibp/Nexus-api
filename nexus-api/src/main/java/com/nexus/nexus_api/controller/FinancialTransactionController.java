@@ -43,6 +43,12 @@ public class FinancialTransactionController {
         return ResponseEntity.ok(FinancialTransactionResponse.from(updated));
     }
 
+    @PatchMapping("/{id}/concluir")
+    public ResponseEntity<FinancialTransactionResponse> markAsConcluded(@PathVariable Long id) {
+        FinancialTransaction updated = transactionService.markAsConcluded(id);
+        return ResponseEntity.ok(FinancialTransactionResponse.from(updated));
+    }
+
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable Long id) {
         transactionService.delete(id);
