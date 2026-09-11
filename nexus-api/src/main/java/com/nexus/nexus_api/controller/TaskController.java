@@ -2,6 +2,7 @@ package com.nexus.nexus_api.controller;
 
 import com.nexus.nexus_api.dto.TaskRequest;
 import com.nexus.nexus_api.dto.TaskResponse;
+import com.nexus.nexus_api.dto.TaskWorkflowStatusRequest;
 import com.nexus.nexus_api.model.Task;
 import com.nexus.nexus_api.model.TaskStatus;
 import com.nexus.nexus_api.service.TaskService;
@@ -44,6 +45,7 @@ public class TaskController {
         return ResponseEntity.ok(tasks);
     }
 
+    /** Inalterado: progresso de estudo do tópico de edital (TaskStatus). */
     @PatchMapping("/{id}")
     public ResponseEntity<TaskResponse> updateStatus(@PathVariable Long id, @RequestBody Map<String, String> body) {
         String statusValue = body.get("status");
@@ -53,5 +55,24 @@ public class TaskController {
         TaskStatus status = TaskStatus.valueOf(statusValue);
         Task updated = taskService.updateStatus(id, status);
         return ResponseEntity.ok(TaskResponse.from(updated));
+    }
+
+    /** Novo: status de fluxo de uma tarefa de rotina comum (TaskWorkflowStatus). */
+    @PatchMapping("/{id}/workflow-status")
+    public ResponseEntity<TaskResponse> updateWorkflowStatus(@PathVariable Long id, @Valid @RequestBody TaskWorkflowStatusRequest request) {
+        Task updated = taskService.updateWorkflowStatus(id, request.workflowStatus());
+        return ResponseEntity.ok(TaskResponse.from(updated));
+    }
+
+    @PutMapping("/{id}")
+    public ResponseEntity<TaskResponse> update(@PathVariable Long id, @Valid @RequestBody TaskRequest request) {
+        Task updated = taskService.update(id, request);
+        return ResponseEntity.ok(TaskResponse.from(updated));
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(@PathVariable Long id) {
+        taskService.delete(id);
+        return ResponseEntity.noContent().build();
     }
 }

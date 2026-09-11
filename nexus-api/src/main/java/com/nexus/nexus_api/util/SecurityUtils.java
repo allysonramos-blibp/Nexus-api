@@ -5,24 +5,11 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 
-/**
- * Ponto único de checagem de "dono do recurso".
- *
- * Toda operação que recebe um id de usuário ou carrega uma entidade
- * dona de um usuário deve passar por aqui antes de prosseguir.
- *
- * Regra:
- * um usuário autenticado só pode ler/alterar/excluir recursos
- * que pertencem a ele mesmo.
- */
 public final class SecurityUtils {
 
     private SecurityUtils() {
     }
 
-    /**
-     * Retorna o ID do usuário autenticado na requisição atual.
-     */
     public static Long getCurrentUserId() {
 
         Authentication authentication =
@@ -43,11 +30,7 @@ public final class SecurityUtils {
         return principal.getId();
     }
 
-    /**
-     * Garante que o dono real do recurso é o usuário autenticado.
-     *
-     * Lança 403 caso contrário.
-     */
+
     public static void assertOwnership(
             Long resourceOwnerId
     ) {

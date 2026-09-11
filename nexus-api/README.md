@@ -16,7 +16,7 @@ Spring Boot 4.1.0 (Spring Framework 7) + Java 21 + PostgreSQL + JWT.
 | Área | Endpoints (prefixo `/api`) |
 |---|---|
 | Autenticação | `/auth/login`, `/auth` (healthcheck), `/users/register` |
-| Tarefas / Edital | `/tasks` |
+| Tarefas / Edital | `/tasks` (CRUD completo: POST/GET/PUT/DELETE + PATCH `/status` edital, PATCH `/workflow-status` rotina) |
 | Financeiro | `/transactions` (+ `PATCH /{id}/concluir` p/ confirmar pendência), `/categories` |
 | Treinos | `/workouts`, `/workout-goals` |
 | Estudos — Planos/Matérias/Assuntos | `/study-plans`, `/subjects`, `/topics` |
@@ -133,6 +133,24 @@ CORS_ALLOWED_ORIGINS=https://app.seudominio.com
   histórico do git.
 - `application.properties` não tem mais nenhuma credencial real hardcoded — só
   placeholders de desenvolvimento local, que não fazem mal se vazarem.
+
+## Notas de migração — Tarefas 2.0 (rotina vs edital)
+
+- `tasks` ganhou `workflow_status` (nullable), `horario` (nullable) e
+  `concluida_em` (nullable) — tudo aditivo, sem migration destrutiva.
+- **Dois sistemas de status convivem no mesmo `Task`, por design:**
+  - `status` (`TaskStatus`: PENDENTE/TEORIA_VISTA/QUESTOES_FEITAS/DOMINADO) —
+    inalterado, usado **só** quando `ehTopicoEdital = true`.
+  - `workflowStatus` (`TaskWorkflowStatus`: PENDENTE/EM_ANDAMENTO/CONCLUIDA/CANCELADA)
+    — novo, usado **só** quando `ehTopicoEdital = false`.
+  - Cada tarefa usa exclusivamente um dos dois — nunca os dois ao mesmo tempo.
+- `PATCH /api/tasks/{id}` continua sendo o endpoint antigo (progresso de edital).
+  `PATCH /api/tasks/{id}/workflow-status` é o novo (tarefas de rotina). Não foram
+  unificados de propósito — são conceitos diferentes.
+- `PUT /api/tasks/{id}` (edição de conteúdo) não altera `ehTopicoEdital`,
+  `status`, `workflowStatus` nem `concluidaEm` — só título, descrição,
+  prioridade, data, horário e categoria. Mudar o estado da tarefa é sempre via
+  uma ação dedicada (PATCH), nunca efeito colateral de uma edição de conteúdo.
 
 ## Notas de migração — Financeiro (contas a pagar/receber e categorias)
 

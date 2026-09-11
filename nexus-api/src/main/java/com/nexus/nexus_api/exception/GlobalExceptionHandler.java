@@ -35,7 +35,6 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
     }
 
-    /** Operação válida em si, mas incompatível com o estado atual do recurso (ex.: finalizar simulado que não foi iniciado). */
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<ApiError> handleIllegalState(IllegalStateException ex) {
         ApiError error = new ApiError(
@@ -46,7 +45,6 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(error);
     }
 
-    /** Credenciais inválidas no login. Mensagem genérica: nunca revela se o e-mail existe. */
     @ExceptionHandler(BadCredentialsException.class)
     public ResponseEntity<ApiError> handleBadCredentials(BadCredentialsException ex) {
         ApiError error = new ApiError(
@@ -57,8 +55,7 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
     }
 
-    /** Qualquer outra falha de autenticação (token ausente/expirado tratado no RestAuthenticationEntryPoint;
-     *  este handler cobre casos lançados dentro de @Service/@Controller, ex. AuthenticationManager). */
+
     @ExceptionHandler(AuthenticationException.class)
     public ResponseEntity<ApiError> handleAuthentication(AuthenticationException ex) {
         ApiError error = new ApiError(
@@ -69,7 +66,7 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
     }
 
-    /** Usuário autenticado tentando acessar/alterar recurso de outra pessoa (regra de ownership). */
+
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ApiError> handleAccessDenied(AccessDeniedException ex) {
         ApiError error = new ApiError(
@@ -80,7 +77,7 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(error);
     }
 
-    /** Falha de Bean Validation (@Valid) nos DTOs de entrada. */
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiError> handleValidation(MethodArgumentNotValidException ex) {
         String message = ex.getBindingResult().getFieldErrors().stream()
