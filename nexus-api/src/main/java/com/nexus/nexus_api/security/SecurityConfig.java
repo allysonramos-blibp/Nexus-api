@@ -32,10 +32,10 @@ public class SecurityConfig {
     private final RestAuthenticationEntryPoint restAuthenticationEntryPoint;
     private final RestAccessDeniedHandler restAccessDeniedHandler;
 
-    // Lista separada por vírgula — em produção, defina CORS_ALLOWED_ORIGINS com o(s)
-    // domínio(s) reais do frontend (ex.: https://app.seudominio.com). O padrão aqui
-    // cobre só o dev local; sem isso configurado, o navegador bloqueia as chamadas
-    // do frontend hospedado por CORS mesmo com tudo o resto certo.
+    // Lista separada por vírgula — o valor de verdade vem de application.properties
+    // (cors.allowed-origins=${CORS_ALLOWED_ORIGINS:...}), que por sua vez lê a variável
+    // de ambiente CORS_ALLOWED_ORIGINS do Render. O padrão abaixo só entra em cena se a
+    // property nem existir no properties (não deveria acontecer, mas é uma rede de segurança).
     @Value("${cors.allowed-origins:http://localhost:5173}")
     private String allowedOriginsRaw;
 
