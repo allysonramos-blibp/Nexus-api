@@ -23,9 +23,11 @@ public class PdfQuestionExtractionService {
 
     // Texto muito grande em uma única chamada arrisca estourar o limite de saída do
     // modelo (a resposta vem truncada e não parseia como JSON) — acima disso, melhor
-    // o usuário dividir o PDF em partes menores.
-    private static final int MAX_INPUT_CHARS = 60_000;
-    private static final int MAX_OUTPUT_TOKENS = 8192;
+    // o usuário dividir o PDF em partes menores. Ajustado para o teto real de saída do
+    // gemini-3.6-flash (65.536 tokens) — bem maior que os 8.192 da Claude, que era o
+    // que definia esses números antes da migração.
+    private static final int MAX_INPUT_CHARS = 200_000;
+    private static final int MAX_OUTPUT_TOKENS = 32_768;
 
     private static final String SYSTEM_PROMPT = """
             Você extrai questões de múltipla escolha de provas/simulados a partir do texto bruto de um PDF,
