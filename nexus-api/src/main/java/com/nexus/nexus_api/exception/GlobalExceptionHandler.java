@@ -45,6 +45,19 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(error);
     }
 
+    @ExceptionHandler(AiServiceException.class)
+    public ResponseEntity<ApiError> handleAiService(AiServiceException ex) {
+        // Loga a causa raiz (se houver) no servidor; a mensagem já é segura pra
+        // devolver ao cliente porque é escrita por nós em GeminiClient, nunca o
+        // corpo bruto de erro do provedor.
+        ApiError error = new ApiError(
+                ex.getStatus().value(),
+                "Falha no serviço de IA",
+                ex.getMessage()
+        );
+        return ResponseEntity.status(ex.getStatus()).body(error);
+    }
+
     @ExceptionHandler(BadCredentialsException.class)
     public ResponseEntity<ApiError> handleBadCredentials(BadCredentialsException ex) {
         ApiError error = new ApiError(

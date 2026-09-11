@@ -18,6 +18,7 @@ public record QuestionResponse(
         QuestionDifficulty dificuldade,
         String gabarito,
         String explicacao,
+        String pegadinha,
         String banca,
         Integer ano,
         Long topicId,
@@ -41,6 +42,9 @@ public record QuestionResponse(
                 question.getDificuldade(),
                 incluirGabarito ? question.getGabarito() : null,
                 incluirGabarito ? question.getExplicacao() : null,
+                // Pegadinha é conteúdo de "gabarito/explicação" (revela por que a alternativa
+                // certa é a certa) — mesma regra de visibilidade que gabarito/explicacao.
+                incluirGabarito ? question.getPegadinha() : null,
                 question.getBanca(),
                 question.getAno(),
                 question.getTopic().getId(),

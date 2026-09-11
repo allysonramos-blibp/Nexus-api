@@ -24,6 +24,18 @@ public record QuestionRequest(
 
         String explicacao,
 
+        /** Dica de pegadinha típica da banca para esse tipo de questão (opcional, gerada pela IA na importação). */
+        String pegadinha,
+
+        /**
+         * Sugestões da IA de disciplina/assunto ao extrair de um PDF — apenas informativas,
+         * usadas pelo frontend para pré-selecionar/criar o Subject/Topic antes do POST bulk.
+         * Não são persistidas em Question (a relação real é via Topic -> Subject).
+         */
+        String disciplinaSugerida,
+
+        String assuntoSugerido,
+
         String banca,
 
         Integer ano

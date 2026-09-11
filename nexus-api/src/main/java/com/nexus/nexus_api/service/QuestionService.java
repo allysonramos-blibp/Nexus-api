@@ -28,6 +28,7 @@ public class QuestionService {
                 .dificuldade(request.dificuldade())
                 .gabarito(request.gabarito())
                 .explicacao(request.explicacao())
+                .pegadinha(request.pegadinha())
                 .banca(request.banca())
                 .ano(request.ano())
                 .topic(topic)
@@ -68,6 +69,7 @@ public class QuestionService {
         question.setDificuldade(request.dificuldade());
         question.setGabarito(request.gabarito());
         question.setExplicacao(request.explicacao());
+        question.setPegadinha(request.pegadinha());
         question.setBanca(request.banca());
         question.setAno(request.ano());
 

@@ -43,6 +43,10 @@ public class Question {
     @Column(columnDefinition = "TEXT")
     private String explicacao;
 
+    /** Dica de pegadinha típica da banca para esse tipo de questão (gerada pela IA na importação por PDF). */
+    @Column(columnDefinition = "TEXT")
+    private String pegadinha;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "topic_id", nullable = false)
     private Topic topic;
