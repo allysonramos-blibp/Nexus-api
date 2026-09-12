@@ -40,8 +40,7 @@ public class QuestionController {
      */
     @PostMapping(value = "/api/questions/extract-pdf", consumes = "multipart/form-data")
     public PdfExtractionResponse extractFromPdf(@RequestParam("file") MultipartFile file) {
-        var questoes = pdfQuestionExtractionService.extract(file);
-        return PdfExtractionResponse.of(questoes);
+        return pdfQuestionExtractionService.extract(file);
     }
 
     @GetMapping("/api/topics/{topicId}/questions")
