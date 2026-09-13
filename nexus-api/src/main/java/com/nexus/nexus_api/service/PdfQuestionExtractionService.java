@@ -60,17 +60,7 @@ public class PdfQuestionExtractionService {
     // chunk, ela reaparece completa no início do próximo (o prompt instrui o model a ignorar
     // questões parciais/incompletas na borda, então a versão completa vinda do overlap é a
     // que efetivamente entra no resultado).
-    //
-    // Precisa ser grande o suficiente pra cobrir blocos de texto-base compartilhado (ex.: "Use
-    // the following TEXT to answer the next N questions"), que costumam ter várias questões
-    // dependendo do mesmo texto. Medido em provas reais: um desses blocos (leitura de inglês
-    // tipo "Technology Consultant Fast Track") passa de 3.500 caracteres sozinho. Um overlap de
-    // só 600 chars não cobre isso — se o corte de chunk cair depois de um bloco desses mas antes
-    // das questões que dependem dele, elas chegam no próximo chunk sem o texto-base completo, e
-    // o model tende a não conseguir (ou não tentar) extraí-las. 4.000 chars dá folga confortável
-    // pra a grande maioria desses blocos sem inflar muito o custo por chunk (ainda é ~13% do
-    // CHUNK_TARGET_CHARS).
-    private static final int CHUNK_OVERLAP_CHARS = 4_000;
+    private static final int CHUNK_OVERLAP_CHARS = 600;
 
     // Teto real de saída do gemini-3.6-flash é 65.536 tokens; usamos metade disso por chunk
     // pra deixar folga (inclusive pra "thinking tokens" do model, que consomem do mesmo
@@ -79,32 +69,18 @@ public class PdfQuestionExtractionService {
 
     // Heurística SÓ para estimar quantas questões o PDF provavelmente tem, usada apenas para
     // alertar o usuário se a extração real ficou muito abaixo disso — não é uma contagem
-    // confiável, por isso nunca é tratada como valor exato em lugar nenhum do fluxo.
+    // confiável (pode ter falso positivo em referências tipo "Art. 5." dentro de texto de lei),
+    // por isso nunca é tratada como valor exato em lugar nenhum do fluxo.
     //
-    // Aceita dois formatos de numeração observados em provas reais (ex.: FGV/Dataprev), cada um
-    // em seu próprio padrão (ver escolha do estilo dominante em estimateQuestionNumbers):
+    // Aceita dois formatos de numeração observados em provas reais (ex.: FGV/Dataprev):
     // (1) "1." / "1)" / "1-" seguido de espaço — numeração com pontuação;
     // (2) o número SOZINHO em sua própria linha, sem pontuação nenhuma (ex.: "1\nAssinale a
-    //     opção..."), que é como a FGV numera as questões nesse tipo de prova.
-    //
-    // IMPORTANTE (bug "questões 1-4 fantasma"): os dois formatos costumavam viver num regex só,
-    // com o "(?:[.)\\-]\\s|$)" tentando os dois de uma vez. Isso gera falso positivo quando uma
-    // questão real tem, dentro do próprio enunciado, uma lista numerada nesse estilo — ex.: uma
-    // questão de inglês com "Consider the following affirmatives: 1. ... 2. ... 3. ... 4. ...".
-    // Cada item da lista bate no formato (1) e é contado como se fosse uma questão nova, mesmo
-    // sem nenhuma questão 1-4 de verdade existir no PDF (ex.: quando se importa só a seção de
-    // Língua Inglesa, que começa na questão 13). O resultado é um alerta de "questões ausentes"
-    // completamente falso.
-    //
-    // A correção: manter os dois formatos em regex SEPARADOS e, em estimateQuestionNumbers,
-    // usar só o estilo que de fato predomina no documento — uma prova real numera as questões de
-    // um jeito só, então o estilo minoritário é ruído (como esse caso da lista dentro do
-    // enunciado, ou referências tipo "Art. 5." em texto de lei).
-    private static final Pattern QUESTION_MARKER_ALONE = Pattern.compile(
-            "(?im)^\\s*(?:quest[aã]o\\s+)?0*([1-9]\\d{0,2})\\s*$"
-    );
-    private static final Pattern QUESTION_MARKER_PUNCT = Pattern.compile(
-            "(?im)^\\s*(?:quest[aã]o\\s+)?0*([1-9]\\d{0,2})\\s*[.)\\-]\\s"
+    //     opção..."), que é como a FGV numera as questões nesse tipo de prova. Sem esse segundo
+    //     caso, a heurística não detecta nenhuma questão em PDFs nesse formato, o que gera alertas
+    //     de "questões ausentes" sem sentido nenhum (número "ausente" que na verdade nunca existiu
+    //     de verdade na forma que a regex esperava).
+    private static final Pattern QUESTION_MARKER = Pattern.compile(
+            "(?im)^\\s*(?:quest[aã]o\\s+)?0*([1-9]\\d{0,2})\\s*(?:[.)\\-]\\s|$)"
     );
 
     private static final String SYSTEM_PROMPT_BASE = """
@@ -265,22 +241,10 @@ public class PdfQuestionExtractionService {
      * para alertar se a extração real ficou muito abaixo disso, ou para apontar quais
      * números especificamente "sumiram". Não é usada para nada além de reporte/alerta
      * (ver ressalvas no Javadoc da classe).
-     *
-     * Roda os dois formatos de numeração separadamente e usa só o que predomina no documento
-     * (mais ocorrências) — evita que o formato minoritário (tipicamente ruído, como uma lista
-     * numerada dentro do enunciado de uma questão) contamine a estimativa. Em caso de empate,
-     * prefere o formato "número sozinho na linha", que é o mais específico dos dois (menos
-     * propenso a casar com texto que não é numeração de questão).
      */
     private Set<Integer> estimateQuestionNumbers(String text) {
-        Set<Integer> alone = matchAll(QUESTION_MARKER_ALONE, text);
-        Set<Integer> punct = matchAll(QUESTION_MARKER_PUNCT, text);
-        return alone.size() >= punct.size() ? alone : punct;
-    }
-
-    private Set<Integer> matchAll(Pattern pattern, String text) {
         Set<Integer> numbers = new TreeSet<>();
-        Matcher matcher = pattern.matcher(text);
+        Matcher matcher = QUESTION_MARKER.matcher(text);
         while (matcher.find()) {
             try {
                 numbers.add(Integer.parseInt(matcher.group(1)));
