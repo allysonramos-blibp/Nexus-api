@@ -71,8 +71,16 @@ public class PdfQuestionExtractionService {
     // alertar o usuário se a extração real ficou muito abaixo disso — não é uma contagem
     // confiável (pode ter falso positivo em referências tipo "Art. 5." dentro de texto de lei),
     // por isso nunca é tratada como valor exato em lugar nenhum do fluxo.
+    //
+    // Aceita dois formatos de numeração observados em provas reais (ex.: FGV/Dataprev):
+    // (1) "1." / "1)" / "1-" seguido de espaço — numeração com pontuação;
+    // (2) o número SOZINHO em sua própria linha, sem pontuação nenhuma (ex.: "1\nAssinale a
+    //     opção..."), que é como a FGV numera as questões nesse tipo de prova. Sem esse segundo
+    //     caso, a heurística não detecta nenhuma questão em PDFs nesse formato, o que gera alertas
+    //     de "questões ausentes" sem sentido nenhum (número "ausente" que na verdade nunca existiu
+    //     de verdade na forma que a regex esperava).
     private static final Pattern QUESTION_MARKER = Pattern.compile(
-            "(?im)^\\s*(?:quest[aã]o\\s+)?0*([1-9]\\d{0,2})\\s*[.)\\-]\\s"
+            "(?im)^\\s*(?:quest[aã]o\\s+)?0*([1-9]\\d{0,2})\\s*(?:[.)\\-]\\s|$)"
     );
 
     private static final String SYSTEM_PROMPT_BASE = """
