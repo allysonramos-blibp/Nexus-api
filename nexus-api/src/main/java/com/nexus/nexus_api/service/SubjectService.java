@@ -5,6 +5,7 @@ import com.nexus.nexus_api.exception.ResourceNotFoundException;
 import com.nexus.nexus_api.model.StudyPlan;
 import com.nexus.nexus_api.model.Subject;
 import com.nexus.nexus_api.repository.SubjectRepository;
+import com.nexus.nexus_api.util.NameNormalizer;
 import com.nexus.nexus_api.util.SecurityUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -34,6 +35,31 @@ public class SubjectService {
     public List<Subject> listByStudyPlan(Long studyPlanId) {
         studyPlanService.findByIdOwnedByCurrentUser(studyPlanId);
         return subjectRepository.findByStudyPlanId(studyPlanId);
+    }
+
+    /**
+     * Busca uma matéria do plano cujo nome normalizado (trim, espaços duplicados,
+     * case-insensitive, sem diacríticos — ver {@link com.nexus.nexus_api.util.NameNormalizer})
+     * bata com {@code nomeSugerido}; se não achar, cria uma nova com esse nome (o texto
+     * exibido é sempre o texto original passado, nunca a versão normalizada). Usado pelo
+     * fluxo de importação de PDF por plano — nunca faz correspondência semântica (ex.:
+     * "Direito Constitucional" e "Direito Administrativo" nunca são tratados como iguais).
+     */
+    public Subject findOrCreateByNome(StudyPlan plan, String nomeSugerido) {
+        String nome = NameNormalizer.isBlank(nomeSugerido) ? "Sem matéria identificada" : nomeSugerido.trim();
+        String chave = NameNormalizer.normalize(nome);
+
+        for (Subject existente : subjectRepository.findByStudyPlanId(plan.getId())) {
+            if (NameNormalizer.normalize(existente.getNome()).equals(chave)) {
+                return existente;
+            }
+        }
+
+        Subject novo = Subject.builder()
+                .nome(nome)
+                .studyPlan(plan)
+                .build();
+        return subjectRepository.save(novo);
     }
 
     public Subject findByIdOwnedByCurrentUser(Long id) {

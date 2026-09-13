@@ -5,6 +5,7 @@ import com.nexus.nexus_api.exception.ResourceNotFoundException;
 import com.nexus.nexus_api.model.Subject;
 import com.nexus.nexus_api.model.Topic;
 import com.nexus.nexus_api.repository.TopicRepository;
+import com.nexus.nexus_api.util.NameNormalizer;
 import com.nexus.nexus_api.util.SecurityUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -33,6 +34,29 @@ public class TopicService {
     public List<Topic> listBySubject(Long subjectId) {
         subjectService.findByIdOwnedByCurrentUser(subjectId);
         return topicRepository.findBySubjectId(subjectId);
+    }
+
+    /**
+     * Mesma lógica de {@link SubjectService#findOrCreateByNome}, no nível de assunto —
+     * busca por nome normalizado dentro da matéria já resolvida, cria só se não achar.
+     * Quando {@code nomeSugerido} vier ausente/inválido (a IA não conseguiu identificar
+     * o assunto), usa o fallback fixo "Geral".
+     */
+    public Topic findOrCreateByNome(Subject subject, String nomeSugerido) {
+        String nome = NameNormalizer.isBlank(nomeSugerido) ? "Geral" : nomeSugerido.trim();
+        String chave = NameNormalizer.normalize(nome);
+
+        for (Topic existente : topicRepository.findBySubjectId(subject.getId())) {
+            if (NameNormalizer.normalize(existente.getNome()).equals(chave)) {
+                return existente;
+            }
+        }
+
+        Topic novo = Topic.builder()
+                .nome(nome)
+                .subject(subject)
+                .build();
+        return topicRepository.save(novo);
     }
 
     public Topic findByIdOwnedByCurrentUser(Long id) {

@@ -29,17 +29,16 @@ import java.util.regex.Pattern;
  *
  * IMPORTANTE (histórico do bug "70 questões viram 7"): a versão anterior mandava o PDF
  * inteiro numa ÚNICA chamada ao Gemini, esperando de volta um ÚNICO array JSON com todas
- * as questões. Isso falha de duas formas para provas longas: (1) o JSON de saída de uma
- * prova de 70 questões facilmente passa de 30-50 mil tokens, estourando o teto de saída
- * do modelo; e (2) mesmo sem estourar o teto, é um comportamento conhecido de LLMs "ficarem
- * preguiçosos" em documentos longos e devolverem um JSON válido, mas com só uma fração das
- * questões, sem sinalizar erro nenhum.
+ * as questões. A solução foi dividir o texto em chunks com sobreposição (ver
+ * {@link #splitIntoChunks}), chamar o Gemini uma vez por chunk, e juntar+deduplicar.
  *
- * A solução: dividir o texto do PDF em pedaços (chunks) de tamanho controlado, com uma
- * pequena sobreposição entre eles (pra não cortar uma questão bem no meio), chamar o Gemini
- * uma vez por chunk, e juntar+deduplicar o resultado. Isso limita o tamanho da resposta por
- * chamada a um valor sempre seguro, e isola a falha de um chunk (não derruba a importação
- * inteira se só um pedaço falhar).
+ * Esta classe expõe dois níveis de resultado:
+ * - {@link #extract(MultipartFile)}: contrato antigo, usado por POST /api/questions/extract-pdf
+ *   (sem contexto de plano) — mantido por compatibilidade.
+ * - {@link #extractDetailed(MultipartFile)}: contrato rico ({@link ExtractionResult}), com números
+ *   ausentes/duplicados, usado pelo novo fluxo de importação por plano
+ *   ({@code PlanQuestionGroupingService}). A extração em si roda uma única vez — o método
+ *   antigo é só uma projeção do resultado detalhado, nunca uma segunda chamada à IA.
  */
 @Slf4j
 @Service
@@ -121,7 +120,42 @@ public class PdfQuestionExtractionService {
     private final GeminiClient geminiClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    /**
+     * Resultado completo de uma extração — usado internamente e pelo fluxo de importação
+     * por plano, que precisa de mais detalhe do que o contrato antigo ({@link PdfExtractionResponse})
+     * expõe.
+     *
+     * @param questoes            questões extraídas, já deduplicadas por número.
+     * @param possivelTotalNoPdf  estimativa heurística (tamanho do conjunto de números detectados por regex).
+     * @param numerosAusentes     números detectados pela heurística mas ausentes do resultado final (ordenados).
+     * @param numerosDuplicados   números que apareceram mais de uma vez antes do dedupe (esperado por causa do
+     *                            overlap entre chunks).
+     * @param chunksProcessados   em quantos pedaços o texto foi dividido.
+     * @param chunksComFalha      quantos desses pedaços falharam na extração.
+     */
+    public record ExtractionResult(
+            List<QuestionRequest> questoes,
+            int possivelTotalNoPdf,
+            List<Integer> numerosAusentes,
+            List<Integer> numerosDuplicados,
+            int chunksProcessados,
+            int chunksComFalha
+    ) {
+    }
+
+    /** Contrato antigo — usado por POST /api/questions/extract-pdf (sem contexto de plano). */
     public PdfExtractionResponse extract(MultipartFile file) {
+        ExtractionResult result = extractDetailed(file);
+        return PdfExtractionResponse.of(
+                result.questoes(),
+                result.possivelTotalNoPdf(),
+                result.chunksProcessados(),
+                result.chunksComFalha()
+        );
+    }
+
+    /** Contrato rico — usado pelo novo fluxo de importação por plano. */
+    public ExtractionResult extractDetailed(MultipartFile file) {
         String text = extractText(file);
 
         if (text.isBlank()) {
@@ -135,12 +169,12 @@ public class PdfQuestionExtractionService {
                             " caracteres, teto atual é " + MAX_TOTAL_INPUT_CHARS + "). Divida o arquivo em partes menores.");
         }
 
-        int estimatedTotal = estimateQuestionCount(text);
+        Set<Integer> numerosDetectados = estimateQuestionNumbers(text);
         List<String> chunks = splitIntoChunks(text);
         log.info("Extração de PDF iniciada: {} caracteres, {} chunk(s), ~{} questões detectadas por heurística",
-                text.length(), chunks.size(), estimatedTotal);
+                text.length(), chunks.size(), numerosDetectados.size());
 
-        List<QuestionRequest> extracted = new ArrayList<>();
+        List<QuestionRequest> extractedRaw = new ArrayList<>();
         int chunksFailed = 0;
         boolean isChunked = chunks.size() > 1;
 
@@ -148,7 +182,7 @@ public class PdfQuestionExtractionService {
             try {
                 List<QuestionRequest> fromChunk = callGemini(chunks.get(i), isChunked);
                 log.info("Chunk {}/{}: {} questões extraídas", i + 1, chunks.size(), fromChunk.size());
-                extracted.addAll(fromChunk);
+                extractedRaw.addAll(fromChunk);
             } catch (AiServiceException e) {
                 chunksFailed++;
                 log.warn("Chunk {}/{} falhou na extração (seguindo para os próximos): {}",
@@ -156,11 +190,33 @@ public class PdfQuestionExtractionService {
             }
         }
 
-        List<QuestionRequest> deduped = dedupeByNumero(extracted);
-        log.info("Extração de PDF concluída: {} questões brutas, {} após dedupe (estimativa era ~{}), {}/{} chunk(s) falharam",
-                extracted.size(), deduped.size(), estimatedTotal, chunksFailed, chunks.size());
+        List<Integer> duplicados = findDuplicateNumeros(extractedRaw);
+        List<QuestionRequest> deduped = dedupeByNumero(extractedRaw);
 
-        return PdfExtractionResponse.of(deduped, estimatedTotal, chunks.size(), chunksFailed);
+        Set<Integer> numerosExtraidos = new HashSet<>();
+        for (QuestionRequest q : deduped) {
+            if (q.numero() != null) {
+                numerosExtraidos.add(q.numero());
+            }
+        }
+        List<Integer> ausentes = numerosDetectados.stream()
+                .filter(n -> !numerosExtraidos.contains(n))
+                .sorted()
+                .toList();
+
+        log.info("Extração de PDF concluída: {} questões brutas, {} após dedupe (estimativa era ~{}), " +
+                        "{} ausente(s), {} duplicada(s) antes do dedupe, {}/{} chunk(s) falharam",
+                extractedRaw.size(), deduped.size(), numerosDetectados.size(),
+                ausentes.size(), duplicados.size(), chunksFailed, chunks.size());
+
+        return new ExtractionResult(
+                deduped,
+                numerosDetectados.size(),
+                ausentes,
+                duplicados,
+                chunks.size(),
+                chunksFailed
+        );
     }
 
     private String extractText(MultipartFile file) {
@@ -173,11 +229,12 @@ public class PdfQuestionExtractionService {
     }
 
     /**
-     * Estimativa heurística (regex) de quantos números de questão aparecem no texto — só
-     * para alertar se a extração real ficou muito abaixo disso. Não é usada para nada além
-     * de reporte/alerta (ver ressalvas no Javadoc da classe).
+     * Estimativa heurística (regex) de quais números de questão aparecem no texto — só
+     * para alertar se a extração real ficou muito abaixo disso, ou para apontar quais
+     * números especificamente "sumiram". Não é usada para nada além de reporte/alerta
+     * (ver ressalvas no Javadoc da classe).
      */
-    private int estimateQuestionCount(String text) {
+    private Set<Integer> estimateQuestionNumbers(String text) {
         Set<Integer> numbers = new TreeSet<>();
         Matcher matcher = QUESTION_MARKER.matcher(text);
         while (matcher.find()) {
@@ -187,7 +244,7 @@ public class PdfQuestionExtractionService {
                 // regex não deveria capturar algo não-numérico, mas por segurança ignoramos
             }
         }
-        return numbers.size();
+        return numbers;
     }
 
     /**
@@ -220,6 +277,22 @@ public class PdfQuestionExtractionService {
             pos = end;
         }
         return chunks;
+    }
+
+    /**
+     * Números de questão que aparecem mais de uma vez ANTES do dedupe (esperado por causa
+     * do overlap entre chunks). Mesma regra de "primeira ocorrência" do {@link #dedupeByNumero}:
+     * a segunda (e demais) ocorrência de um número já visto é que conta como duplicata.
+     */
+    private List<Integer> findDuplicateNumeros(List<QuestionRequest> items) {
+        Set<Integer> seen = new HashSet<>();
+        List<Integer> duplicated = new ArrayList<>();
+        for (QuestionRequest q : items) {
+            if (q.numero() != null && !seen.add(q.numero())) {
+                duplicated.add(q.numero());
+            }
+        }
+        return duplicated;
     }
 
     /**

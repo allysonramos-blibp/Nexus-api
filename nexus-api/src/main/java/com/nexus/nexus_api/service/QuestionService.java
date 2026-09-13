@@ -20,7 +20,8 @@ public class QuestionService {
     private final QuestionRepository questionRepository;
     private final TopicService topicService;
 
-    private Question build(Topic topic, QuestionRequest request) {
+    /** Público para reaproveitamento por outros services (ex.: importação de PDF por plano). */
+    public Question build(Topic topic, QuestionRequest request) {
         return Question.builder()
                 .numero(request.numero())
                 .enunciado(request.enunciado())
