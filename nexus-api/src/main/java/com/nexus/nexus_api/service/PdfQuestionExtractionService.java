@@ -17,6 +17,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -25,121 +26,251 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Extrai questões de um PDF via Gemini.
+ * Serviço responsável pela extração de questões de provas em PDF utilizando Gemini.
  *
- * IMPORTANTE (histórico do bug "70 questões viram 7"): a versão anterior mandava o PDF
- * inteiro numa ÚNICA chamada ao Gemini, esperando de volta um ÚNICO array JSON com todas
- * as questões. A solução foi dividir o texto em chunks com sobreposição (ver
- * {@link #splitIntoChunks}), chamar o Gemini uma vez por chunk, e juntar+deduplicar.
+ * Estratégia:
  *
- * Esta classe expõe dois níveis de resultado:
- * - {@link #extract(MultipartFile)}: contrato antigo, usado por POST /api/questions/extract-pdf
- *   (sem contexto de plano) — mantido por compatibilidade.
- * - {@link #extractDetailed(MultipartFile)}: contrato rico ({@link ExtractionResult}), com números
- *   ausentes/duplicados, usado pelo novo fluxo de importação por plano
- *   ({@code PlanQuestionGroupingService}). A extração em si roda uma única vez — o método
- *   antigo é só uma projeção do resultado detalhado, nunca uma segunda chamada à IA.
+ * 1. Extrai o texto do PDF usando PDFBox.
+ * 2. Detecta os marcadores das questões.
+ * 3. Divide o documento em blocos de aproximadamente 8 questões.
+ * 4. Envia cada bloco separadamente ao Gemini.
+ * 5. O Gemini retorna JSON estruturado.
+ * 6. Junta todos os resultados.
+ * 7. Remove duplicidades pelo número da questão.
+ * 8. Informa questões ausentes e chunks que falharam.
+ *
+ * Essa abordagem evita enviar blocos gigantes ao Gemini e reduz o risco de:
+ *
+ * - JSON truncado;
+ * - limite de output;
+ * - perda de questões no final do chunk;
+ * - falha específica em blocos grandes de Conhecimentos Específicos;
+ * - problemas com questões contendo código, XML, JSON ou tabelas.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class PdfQuestionExtractionService {
 
-    // Teto de segurança pro texto total do PDF — acima disso o número de chunks (e o custo/
-    // tempo da importação) fica exagerado; provas normais (até ~150-200 páginas) ficam bem
-    // abaixo disso.
+    /*
+     * Limite de segurança para o texto total do PDF.
+     */
     private static final int MAX_TOTAL_INPUT_CHARS = 600_000;
 
-    // Tamanho-alvo de cada chunk mandado ao Gemini. Calibrado com folga generosa: mesmo no
-    // pior caso (questão com enunciado longo + explicação + pegadinha, ~700-900 tokens de
-    // saída por questão), um chunk de 30k caracteres de entrada não deve gerar mais que uns
-    // 15-20 mil tokens de saída — bem abaixo do teto de MAX_OUTPUT_TOKENS.
-    private static final int CHUNK_TARGET_CHARS = 30_000;
+    /*
+     * Número aproximado de questões por chamada ao Gemini.
+     *
+     * Para provas como Dataprev:
+     *
+     * 1–8
+     * 9–16
+     * 17–24
+     * ...
+     *
+     * A divisão real respeita os marcadores encontrados no PDF.
+     */
+    private static final int QUESTIONS_PER_CHUNK = 8;
 
-    // Sobreposição entre chunks consecutivos: se uma questão for cortada bem no fim de um
-    // chunk, ela reaparece completa no início do próximo (o prompt instrui o model a ignorar
-    // questões parciais/incompletas na borda, então a versão completa vinda do overlap é a
-    // que efetivamente entra no resultado).
-    private static final int CHUNK_OVERLAP_CHARS = 600;
+    /*
+     * Quantidade máxima de caracteres permitida em um chunk.
+     *
+     * Essa proteção existe para casos em que uma única questão seja
+     * extremamente longa.
+     */
+    private static final int MAX_CHUNK_CHARS = 22_000;
 
-    // Teto real de saída do gemini-3.6-flash é 65.536 tokens; usamos metade disso por chunk
-    // pra deixar folga (inclusive pra "thinking tokens" do model, que consomem do mesmo
-    // orçamento de saída).
-    private static final int MAX_OUTPUT_TOKENS = 32_768;
+    /*
+     * Sobreposição entre chunks.
+     *
+     * A divisão é feita por questão, então a sobreposição é pequena e serve
+     * apenas como segurança para documentos com estrutura irregular.
+     */
+    private static final int CHUNK_OVERLAP_CHARS = 1_500;
 
-    // Heurística SÓ para estimar quantas questões o PDF provavelmente tem, usada apenas para
-    // alertar o usuário se a extração real ficou muito abaixo disso — não é uma contagem
-    // confiável (pode ter falso positivo em referências tipo "Art. 5." dentro de texto de lei),
-    // por isso nunca é tratada como valor exato em lugar nenhum do fluxo.
-    //
-    // Aceita dois formatos de numeração observados em provas reais (ex.: FGV/Dataprev):
-    // (1) "1." / "1)" / "1-" seguido de espaço — numeração com pontuação;
-    // (2) o número SOZINHO em sua própria linha, sem pontuação nenhuma (ex.: "1\nAssinale a
-    //     opção..."), que é como a FGV numera as questões nesse tipo de prova. Sem esse segundo
-    //     caso, a heurística não detecta nenhuma questão em PDFs nesse formato, o que gera alertas
-    //     de "questões ausentes" sem sentido nenhum (número "ausente" que na verdade nunca existiu
-    //     de verdade na forma que a regex esperava).
+    /*
+     * Limite de saída por chamada ao Gemini.
+     *
+     * Como agora cada chamada contém poucas questões, 16k tokens é suficiente
+     * na grande maioria dos casos e reduz o risco de resposta truncada.
+     */
+    private static final int MAX_OUTPUT_TOKENS = 16_384;
+
+    /*
+     * Detecta questões no formato:
+     *
+     * 1.
+     * 2)
+     * 3-
+     *
+     * ou:
+     *
+     * Questão 1
+     * Questão 2.
+     *
+     * Também aceita o número sozinho em uma linha:
+     *
+     * 41
+     * Assinale...
+     */
     private static final Pattern QUESTION_MARKER = Pattern.compile(
             "(?im)^\\s*(?:quest[aã]o\\s+)?0*([1-9]\\d{0,2})\\s*(?:[.)\\-]\\s|$)"
     );
 
     private static final String SYSTEM_PROMPT_BASE = """
-            Você extrai questões de múltipla escolha de provas/simulados a partir do texto bruto de um PDF,
-            devolvendo cada questão já classificada e com uma dica pedagógica de pegadinha.
+            Você é um extrator especializado de questões de concursos públicos.
 
-            Preencha cada campo do schema assim:
-            - numero: número da questão no PDF, ou null se não identificar.
-            - enunciado: o enunciado completo da questão, sem o número.
-            - alternativas: uma string por alternativa, sem o prefixo "A)", "B)" etc.
-            - disciplinaSugerida: a disciplina/matéria a que a questão pertence (ex.: "Direito Constitucional"),
-              sua melhor estimativa mesmo que o PDF não rotule explicitamente; null só se for realmente impossível inferir.
-              Um mesmo PDF pode ter VÁRIAS disciplinas diferentes (ex.: Português, depois Inglês, depois Raciocínio
-              Lógico) — identifique a disciplina questão a questão, nunca assuma que todo o documento é uma matéria só.
-            - assuntoSugerido: o assunto/tópico específico dentro da disciplina (ex.: "Controle de Constitucionalidade").
-            - dificuldade: "FACIL", "MEDIA" ou "DIFICIL" — só se o PDF indicar isso explicitamente, senão null.
-            - gabarito: o TEXTO EXATO (idêntico, caractere a caractere) de uma das strings em "alternativas" —
-              NUNCA a letra sozinha. Se o gabarito estiver numa lista separada (ex.: uma seção "GABARITO" no fim
-              do documento com algo como "1-A 2-C 3-D..."), cruze o número da questão com essa lista e resolva
-              qual alternativa aquela letra representa, copiando o texto dela. Se não conseguir identificar o
-              gabarito com confiança, deixe como uma string vazia "" — não invente uma resposta.
-            - explicacao: comentário/justificativa da resposta, se o PDF trouxer; senão sua própria explicação
-              objetiva de por que aquela alternativa é a correta.
-            - pegadinha: uma frase curta descrevendo o tipo de armadilha que a banca costuma usar nesse cenário
-              (ex.: "a banca troca 'deve' por 'pode' na alternativa errada para confundir o candidato"); null se
-              não houver pegadinha identificável.
-            - banca: banca organizadora, se identificável; senão null.
-            - ano: ano da prova, se identificável; senão null.
+            Você receberá um TRECHO de uma prova em texto bruto extraído de PDF.
 
-            Ignore cabeçalhos, rodapés, numeração de página e qualquer coisa que não seja questão ou gabarito.
+            Sua tarefa é transformar TODAS as questões completas presentes nesse trecho
+            em objetos JSON seguindo exatamente o schema fornecido.
 
-            EXTRAIA TODAS AS QUESTÕES COMPLETAS DO TRECHO, sem pular nenhuma, mesmo que sejam muitas. Nunca
-            resuma, combine ou "escolha algumas representativas" — cada questão do texto vira um item do array.
+            REGRAS OBRIGATÓRIAS:
+
+            1. Extraia TODAS as questões completas presentes no trecho.
+            2. NÃO pule questões.
+            3. NÃO resuma questões.
+            4. NÃO combine duas questões.
+            5. Cada questão deve virar exatamente um objeto.
+            6. Preserve o texto original das alternativas.
+            7. Remova apenas o prefixo da alternativa, como A), B), C), D) ou E).
+            8. O campo "numero" deve conter o número original da questão.
+            9. Não invente questões.
+            10. Não invente alternativas.
+            11. Não invente gabaritos.
+            12. Se não houver gabarito identificável, use "".
+            13. Se uma questão estiver claramente cortada no início ou no final do trecho,
+                não a inclua.
+            14. Não inclua cabeçalhos, rodapés ou números de página como questões.
+
+            CLASSIFICAÇÃO:
+
+            - disciplinaSugerida:
+              Identifique a disciplina/matéria da questão com base no conteúdo.
+
+            - assuntoSugerido:
+              Identifique o assunto específico dentro da disciplina.
+
+            IMPORTANTE:
+            O documento pode possuir várias disciplinas.
+            Nunca assuma que todas as questões pertencem à mesma disciplina.
+
+            Exemplos de disciplinas:
+            - Língua Portuguesa
+            - Inglês
+            - Raciocínio Lógico
+            - Atualidades
+            - Legislação
+            - Engenharia de Software
+            - Banco de Dados
+            - Segurança da Informação
+            - Arquitetura de Software
+            - Desenvolvimento de Software
+
+            Para Conhecimentos Específicos, seja específico conforme o conteúdo.
+            Por exemplo:
+            - Spring
+            - REST
+            - Scrum
+            - Testes de Software
+            - Redes
+            - Segurança
+            - Banco de Dados
+            - NoSQL
+            - ETL
+            - BI
+            - Arquitetura de Software
+
+            DIFICULDADE:
+
+            Use:
+            - FACIL
+            - MEDIA
+            - DIFICIL
+
+            Se não houver informação suficiente para determinar a dificuldade,
+            use null.
+
+            GABARITO:
+
+            O campo "gabarito" deve conter o TEXTO EXATO da alternativa correta.
+
+            NUNCA coloque somente:
+            A
+            B
+            C
+            D
+            E
+
+            Se o documento apresentar um gabarito separado, tente relacionar o número
+            da questão com a letra correspondente e depois copie o texto completo
+            da alternativa.
+
+            Se não for possível determinar o gabarito com segurança:
+            use "".
+
+            EXPLICAÇÃO:
+
+            Se o PDF trouxer explicação, preserve-a de forma objetiva.
+
+            Caso não exista explicação no PDF, produza uma explicação curta e objetiva
+            baseada na questão.
+
+            A explicação deve ter no máximo 2 frases.
+
+            PEGADINHA:
+
+            Informe uma frase curta sobre a possível armadilha da questão.
+
+            Caso não exista uma pegadinha identificável:
+            use null.
+
+            BANCA:
+
+            Identifique a banca quando estiver disponível.
+
+            ANO:
+
+            Identifique o ano quando estiver disponível.
+
+            IMPORTANTE SOBRE A RESPOSTA:
+
+            Retorne SOMENTE o array JSON.
+
+            Não utilize:
+            - Markdown
+            - ```json
+            - comentários
+            - texto antes do JSON
+            - texto depois do JSON
+
+            O resultado deve ser um JSON válido.
             """;
 
     private static final String CHUNKED_SUFFIX = """
 
-            ATENÇÃO: o texto abaixo é UM TRECHO de um documento maior, não a prova inteira — ele pode começar ou
-            terminar no meio de uma questão (o trecho seguinte/anterior continua o documento, com alguma
-            sobreposição de texto entre eles). Se a primeira ou a última questão do trecho estiver incompleta
-            (faltando enunciado ou alternativas porque foi cortada na borda do trecho), NÃO a inclua no resultado —
-            ela vai aparecer completa no trecho vizinho. Só inclua questões que estão inteiras dentro deste trecho.
+            ATENÇÃO:
+
+            Este texto é apenas um trecho de uma prova maior.
+
+            Analise somente as questões completas presentes neste trecho.
+
+            Se a primeira questão estiver incompleta porque começou antes do trecho,
+            ignore essa questão.
+
+            Se a última questão estiver incompleta porque continua no próximo trecho,
+            ignore essa questão.
+
+            Não tente reconstruir uma questão cortada usando suposições.
+
+            Extraia todas as outras questões completas.
             """;
 
     private final GeminiClient geminiClient;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
-     * Resultado completo de uma extração — usado internamente e pelo fluxo de importação
-     * por plano, que precisa de mais detalhe do que o contrato antigo ({@link PdfExtractionResponse})
-     * expõe.
-     *
-     * @param questoes            questões extraídas, já deduplicadas por número.
-     * @param possivelTotalNoPdf  estimativa heurística (tamanho do conjunto de números detectados por regex).
-     * @param numerosAusentes     números detectados pela heurística mas ausentes do resultado final (ordenados).
-     * @param numerosDuplicados   números que apareceram mais de uma vez antes do dedupe (esperado por causa do
-     *                            overlap entre chunks).
-     * @param chunksProcessados   em quantos pedaços o texto foi dividido.
-     * @param chunksComFalha      quantos desses pedaços falharam na extração.
+     * Resultado detalhado da extração.
      */
     public record ExtractionResult(
             List<QuestionRequest> questoes,
@@ -151,9 +282,17 @@ public class PdfQuestionExtractionService {
     ) {
     }
 
-    /** Contrato antigo — usado por POST /api/questions/extract-pdf (sem contexto de plano). */
+    /**
+     * Contrato antigo.
+     *
+     * Mantido para compatibilidade com:
+     *
+     * POST /api/questions/extract-pdf
+     */
     public PdfExtractionResponse extract(MultipartFile file) {
+
         ExtractionResult result = extractDetailed(file);
+
         return PdfExtractionResponse.of(
                 result.questoes(),
                 result.possivelTotalNoPdf(),
@@ -162,60 +301,173 @@ public class PdfQuestionExtractionService {
         );
     }
 
-    /** Contrato rico — usado pelo novo fluxo de importação por plano. */
+    /**
+     * Extração detalhada utilizada pelo importador no nível do plano.
+     */
     public ExtractionResult extractDetailed(MultipartFile file) {
+
         String text = extractText(file);
 
-        if (text.isBlank()) {
+        if (text == null || text.isBlank()) {
+
             throw new IllegalStateException(
-                    "Não consegui extrair texto desse PDF — se ele for uma imagem escaneada (sem texto selecionável), essa importação automática não funciona, só digitando manualmente.");
+                    "Não consegui extrair texto desse PDF. " +
+                    "Se o arquivo for um PDF escaneado como imagem, " +
+                    "será necessário utilizar OCR ou importar outro arquivo."
+            );
         }
 
         if (text.length() > MAX_TOTAL_INPUT_CHARS) {
+
             throw new IllegalStateException(
-                    "Esse PDF tem texto demais pra processar (" + text.length() +
-                            " caracteres, teto atual é " + MAX_TOTAL_INPUT_CHARS + "). Divida o arquivo em partes menores.");
+                    "Esse PDF possui " +
+                    text.length() +
+                    " caracteres, acima do limite atual de " +
+                    MAX_TOTAL_INPUT_CHARS +
+                    ". Divida o PDF em partes menores."
+            );
         }
 
+        /*
+         * Detecta os números das questões presentes no documento.
+         */
         Set<Integer> numerosDetectados = estimateQuestionNumbers(text);
-        List<String> chunks = splitIntoChunks(text);
-        log.info("Extração de PDF iniciada: {} caracteres, {} chunk(s), ~{} questões detectadas por heurística",
-                text.length(), chunks.size(), numerosDetectados.size());
+
+        /*
+         * Divide o PDF por questões.
+         */
+        List<String> chunks = splitIntoQuestionChunks(text);
+
+        log.info(
+                "[PDF] Texto extraído: {} caracteres | questões detectadas: {} | chunks: {}",
+                text.length(),
+                numerosDetectados.size(),
+                chunks.size()
+        );
 
         List<QuestionRequest> extractedRaw = new ArrayList<>();
+
         int chunksFailed = 0;
-        boolean isChunked = chunks.size() > 1;
 
         for (int i = 0; i < chunks.size(); i++) {
+
+            String chunk = chunks.get(i);
+
             try {
-                List<QuestionRequest> fromChunk = callGemini(chunks.get(i), isChunked);
-                log.info("Chunk {}/{}: {} questões extraídas", i + 1, chunks.size(), fromChunk.size());
+
+                log.info(
+                        "[PDF] Processando chunk {}/{} | {} caracteres",
+                        i + 1,
+                        chunks.size(),
+                        chunk.length()
+                );
+
+                List<QuestionRequest> fromChunk =
+                        callGemini(chunk, chunks.size() > 1);
+
+                log.info(
+                        "[PDF] Chunk {}/{} concluído: {} questão(ões)",
+                        i + 1,
+                        chunks.size(),
+                        fromChunk.size()
+                );
+
                 extractedRaw.addAll(fromChunk);
+
             } catch (AiServiceException e) {
+
                 chunksFailed++;
-                log.warn("Chunk {}/{} falhou na extração (seguindo para os próximos): {}",
-                        i + 1, chunks.size(), e.getMessage());
+
+                log.error(
+                        "[PDF] Chunk {}/{} falhou: {}",
+                        i + 1,
+                        chunks.size(),
+                        e.getMessage(),
+                        e
+                );
+
+            } catch (Exception e) {
+
+                chunksFailed++;
+
+                log.error(
+                        "[PDF] Erro inesperado no chunk {}/{}",
+                        i + 1,
+                        chunks.size(),
+                        e
+                );
             }
         }
 
-        List<Integer> duplicados = findDuplicateNumeros(extractedRaw);
-        List<QuestionRequest> deduped = dedupeByNumero(extractedRaw);
+        /*
+         * Detecta duplicações antes do dedupe.
+         */
+        List<Integer> duplicados =
+                findDuplicateNumeros(extractedRaw);
 
-        Set<Integer> numerosExtraidos = new HashSet<>();
-        for (QuestionRequest q : deduped) {
-            if (q.numero() != null) {
-                numerosExtraidos.add(q.numero());
+        /*
+         * Remove duplicações.
+         */
+        List<QuestionRequest> deduped =
+                dedupeByNumero(extractedRaw);
+
+        /*
+         * Identifica os números realmente extraídos.
+         */
+        Set<Integer> numerosExtraidos =
+                new HashSet<>();
+
+        for (QuestionRequest question : deduped) {
+
+            if (question.numero() != null) {
+                numerosExtraidos.add(question.numero());
             }
         }
-        List<Integer> ausentes = numerosDetectados.stream()
-                .filter(n -> !numerosExtraidos.contains(n))
-                .sorted()
-                .toList();
 
-        log.info("Extração de PDF concluída: {} questões brutas, {} após dedupe (estimativa era ~{}), " +
-                        "{} ausente(s), {} duplicada(s) antes do dedupe, {}/{} chunk(s) falharam",
-                extractedRaw.size(), deduped.size(), numerosDetectados.size(),
-                ausentes.size(), duplicados.size(), chunksFailed, chunks.size());
+        /*
+         * Descobre quais números detectados no PDF não apareceram
+         * no resultado do Gemini.
+         */
+        List<Integer> ausentes =
+                numerosDetectados.stream()
+                        .filter(numero -> !numerosExtraidos.contains(numero))
+                        .sorted()
+                        .toList();
+
+        /*
+         * Log final.
+         */
+        log.info(
+                "[PDF] Extração concluída | brutas={} | finais={} | detectadas={} | ausentes={} | duplicadas={} | falhas={}/{}",
+                extractedRaw.size(),
+                deduped.size(),
+                numerosDetectados.size(),
+                ausentes.size(),
+                duplicados.size(),
+                chunksFailed,
+                chunks.size()
+        );
+
+        /*
+         * Se TODOS os chunks falharam, não silencie o problema.
+         *
+         * Antes isso acabava aparecendo no frontend como:
+         *
+         * "Não encontrei questões nesse PDF."
+         *
+         * quando, na verdade, o Gemini tinha falhado.
+         */
+        if (deduped.isEmpty() && !chunks.isEmpty() && chunksFailed == chunks.size()) {
+
+            throw new AiServiceException(
+                    HttpStatus.BAD_GATEWAY,
+                    "Não foi possível extrair as questões do PDF. " +
+                    "Todos os " +
+                    chunks.size() +
+                    " trecho(s) enviados para a IA falharam. " +
+                    "Verifique os logs do Gemini."
+            );
+        }
 
         return new ExtractionResult(
                 deduped,
@@ -227,188 +479,950 @@ public class PdfQuestionExtractionService {
         );
     }
 
+    /**
+     * Extrai o texto bruto usando PDFBox.
+     */
     private String extractText(MultipartFile file) {
-        try (PDDocument document = Loader.loadPDF(file.getBytes())) {
-            PDFTextStripper stripper = new PDFTextStripper();
+
+        if (file == null || file.isEmpty()) {
+
+            throw new IllegalArgumentException(
+                    "Nenhum arquivo PDF foi enviado."
+            );
+        }
+
+        try (PDDocument document =
+                     Loader.loadPDF(file.getBytes())) {
+
+            PDFTextStripper stripper =
+                    new PDFTextStripper();
+
+            /*
+             * Mantemos a ordem das páginas.
+             */
+            stripper.setSortByPosition(true);
+
             return stripper.getText(document);
+
         } catch (IOException e) {
-            throw new IllegalStateException("Não consegui ler esse arquivo como PDF: " + e.getMessage(), e);
+
+            throw new IllegalStateException(
+                    "Não consegui ler esse arquivo como PDF: " +
+                    e.getMessage(),
+                    e
+            );
         }
     }
 
     /**
-     * Estimativa heurística (regex) de quais números de questão aparecem no texto — só
-     * para alertar se a extração real ficou muito abaixo disso, ou para apontar quais
-     * números especificamente "sumiram". Não é usada para nada além de reporte/alerta
-     * (ver ressalvas no Javadoc da classe).
+     * Detecta os números das questões existentes no PDF.
      */
     private Set<Integer> estimateQuestionNumbers(String text) {
-        Set<Integer> numbers = new TreeSet<>();
-        Matcher matcher = QUESTION_MARKER.matcher(text);
+
+        Set<Integer> numbers =
+                new TreeSet<>();
+
+        Matcher matcher =
+                QUESTION_MARKER.matcher(text);
+
         while (matcher.find()) {
+
             try {
-                numbers.add(Integer.parseInt(matcher.group(1)));
+
+                int number =
+                        Integer.parseInt(matcher.group(1));
+
+                /*
+                 * Evita considerar números absurdos como questões.
+                 *
+                 * Provas normalmente ficam abaixo de 1000.
+                 */
+                if (number > 0 && number <= 999) {
+                    numbers.add(number);
+                }
+
             } catch (NumberFormatException ignored) {
-                // regex não deveria capturar algo não-numérico, mas por segurança ignoramos
+                // Ignora marcador inválido.
             }
         }
+
         return numbers;
     }
 
     /**
-     * Divide o texto em pedaços de ~CHUNK_TARGET_CHARS, preferindo cortar em uma quebra de
-     * parágrafo (linha em branco) próxima do alvo pra reduzir a chance de partir uma questão
-     * ao meio. Cada chunk (exceto o primeiro) inclui os últimos CHUNK_OVERLAP_CHARS caracteres
-     * do chunk anterior, como rede de segurança adicional.
+     * Divide o documento por marcadores de questão.
+     *
+     * Exemplo:
+     *
+     * 1
+     * ...
+     * 2
+     * ...
+     * 3
+     * ...
+     *
+     * vira aproximadamente:
+     *
+     * Chunk 1 -> questões 1–8
+     * Chunk 2 -> questões 9–16
+     * Chunk 3 -> questões 17–24
+     * ...
+     *
+     * Isso é mais seguro que simplesmente cortar a cada X caracteres.
      */
-    private List<String> splitIntoChunks(String text) {
-        List<String> chunks = new ArrayList<>();
-        int len = text.length();
+    private List<String> splitIntoQuestionChunks(String text) {
 
-        if (len <= CHUNK_TARGET_CHARS) {
-            chunks.add(text);
-            return chunks;
+        List<QuestionMarkerPosition> markers =
+                findQuestionMarkers(text);
+
+        /*
+         * Se não encontramos marcadores suficientes,
+         * utilizamos fallback por caracteres.
+         */
+        if (markers.isEmpty()) {
+
+            log.warn(
+                    "[PDF] Nenhum marcador de questão encontrado. " +
+                    "Usando fallback por caracteres."
+            );
+
+            return splitByCharacterLimit(text);
         }
 
-        int pos = 0;
-        while (pos < len) {
-            int target = Math.min(pos + CHUNK_TARGET_CHARS, len);
-            int end = target;
-            if (target < len) {
-                int lastBreak = text.lastIndexOf("\n\n", target);
-                if (lastBreak > pos + (CHUNK_TARGET_CHARS / 2)) {
-                    end = lastBreak;
-                }
+        List<QuestionBlock> questionBlocks =
+                new ArrayList<>();
+
+        for (int i = 0; i < markers.size(); i++) {
+
+            QuestionMarkerPosition current =
+                    markers.get(i);
+
+            int start =
+                    current.position();
+
+            int end;
+
+            if (i + 1 < markers.size()) {
+
+                end =
+                        markers.get(i + 1).position();
+
+            } else {
+
+                end =
+                        text.length();
             }
-            int overlapStart = Math.max(pos - CHUNK_OVERLAP_CHARS, 0);
-            chunks.add(text.substring(overlapStart, end));
-            pos = end;
+
+            if (start >= end) {
+                continue;
+            }
+
+            String block =
+                    text.substring(start, end).trim();
+
+            if (!block.isBlank()) {
+
+                questionBlocks.add(
+                        new QuestionBlock(
+                                current.number(),
+                                block
+                        )
+                );
+            }
         }
+
+        if (questionBlocks.isEmpty()) {
+
+            return splitByCharacterLimit(text);
+        }
+
+        List<String> chunks =
+                new ArrayList<>();
+
+        StringBuilder currentChunk =
+                new StringBuilder();
+
+        int questionsInCurrentChunk = 0;
+
+        for (QuestionBlock block : questionBlocks) {
+
+            String blockText =
+                    block.text();
+
+            /*
+             * Questão individual extremamente grande.
+             *
+             * Nesse caso não temos como dividi-la por outra questão.
+             */
+            if (blockText.length() > MAX_CHUNK_CHARS) {
+
+                if (currentChunk.length() > 0) {
+
+                    chunks.add(
+                            currentChunk.toString()
+                    );
+
+                    currentChunk.setLength(0);
+                    questionsInCurrentChunk = 0;
+                }
+
+                /*
+                 * Divide a questão grande em pedaços apenas como último recurso.
+                 */
+                List<String> oversized =
+                        splitLargeQuestion(blockText);
+
+                chunks.addAll(oversized);
+
+                continue;
+            }
+
+            boolean atingiuQuantidade =
+                    questionsInCurrentChunk >= QUESTIONS_PER_CHUNK;
+
+            boolean ultrapassaTamanho =
+                    currentChunk.length() > 0 &&
+                    currentChunk.length() + blockText.length()
+                            > MAX_CHUNK_CHARS;
+
+            if (atingiuQuantidade || ultrapassaTamanho) {
+
+                chunks.add(
+                        currentChunk.toString()
+                );
+
+                /*
+                 * Pequena sobreposição textual como segurança.
+                 */
+                String overlap =
+                        getTail(
+                                currentChunk.toString(),
+                                CHUNK_OVERLAP_CHARS
+                        );
+
+                currentChunk.setLength(0);
+
+                if (!overlap.isBlank()) {
+
+                    currentChunk
+                            .append(overlap)
+                            .append("\n\n");
+                }
+
+                questionsInCurrentChunk = 0;
+            }
+
+            currentChunk
+                    .append(blockText)
+                    .append("\n\n");
+
+            questionsInCurrentChunk++;
+        }
+
+        if (currentChunk.length() > 0) {
+
+            chunks.add(
+                    currentChunk.toString()
+            );
+        }
+
         return chunks;
     }
 
     /**
-     * Números de questão que aparecem mais de uma vez ANTES do dedupe (esperado por causa
-     * do overlap entre chunks). Mesma regra de "primeira ocorrência" do {@link #dedupeByNumero}:
-     * a segunda (e demais) ocorrência de um número já visto é que conta como duplicata.
+     * Encontra a posição de cada marcador de questão.
      */
-    private List<Integer> findDuplicateNumeros(List<QuestionRequest> items) {
-        Set<Integer> seen = new HashSet<>();
-        List<Integer> duplicated = new ArrayList<>();
-        for (QuestionRequest q : items) {
-            if (q.numero() != null && !seen.add(q.numero())) {
-                duplicated.add(q.numero());
+    private List<QuestionMarkerPosition> findQuestionMarkers(
+            String text
+    ) {
+
+        List<QuestionMarkerPosition> markers =
+                new ArrayList<>();
+
+        Matcher matcher =
+                QUESTION_MARKER.matcher(text);
+
+        while (matcher.find()) {
+
+            try {
+
+                int number =
+                        Integer.parseInt(matcher.group(1));
+
+                if (number > 0 && number <= 999) {
+
+                    markers.add(
+                            new QuestionMarkerPosition(
+                                    number,
+                                    matcher.start()
+                            )
+                    );
+                }
+
+            } catch (NumberFormatException ignored) {
+                // Ignora.
             }
         }
-        return duplicated;
+
+        /*
+         * Remove posições duplicadas.
+         *
+         * Isso pode acontecer em alguns PDFs quando o PDFBox
+         * produz linhas repetidas.
+         */
+        Map<Integer, QuestionMarkerPosition> unique =
+                new LinkedHashMap<>();
+
+        for (QuestionMarkerPosition marker : markers) {
+
+            unique.putIfAbsent(
+                    marker.position(),
+                    marker
+            );
+        }
+
+        return new ArrayList<>(
+                unique.values()
+        );
     }
 
     /**
-     * Remove duplicatas por número de questão (esperado por causa do overlap entre chunks —
-     * a mesma questão pode ser extraída duas vezes, uma incompleta e ignorada pelo model, e
-     * uma completa). Mantém a primeira ocorrência de cada número; questões sem número
-     * identificado (numero == null) nunca são deduplicadas entre si, já que não há como saber
-     * com segurança se são a mesma questão.
+     * Fallback quando o PDF não possui marcadores detectáveis.
      */
-    private List<QuestionRequest> dedupeByNumero(List<QuestionRequest> items) {
-        List<QuestionRequest> result = new ArrayList<>();
-        Set<Integer> seen = new HashSet<>();
-        for (QuestionRequest q : items) {
-            if (q.numero() != null && !seen.add(q.numero())) {
-                continue;
+    private List<String> splitByCharacterLimit(
+            String text
+    ) {
+
+        List<String> chunks =
+                new ArrayList<>();
+
+        int length =
+                text.length();
+
+        int position = 0;
+
+        while (position < length) {
+
+            int end =
+                    Math.min(
+                            position + MAX_CHUNK_CHARS,
+                            length
+                    );
+
+            if (end < length) {
+
+                int lineBreak =
+                        text.lastIndexOf(
+                                "\n\n",
+                                end
+                        );
+
+                if (lineBreak > position + 5_000) {
+
+                    end = lineBreak;
+                }
             }
-            result.add(q);
+
+            if (end <= position) {
+                break;
+            }
+
+            String chunk =
+                    text.substring(
+                            position,
+                            end
+                    ).trim();
+
+            if (!chunk.isBlank()) {
+
+                chunks.add(chunk);
+            }
+
+            position = end;
         }
-        return result;
+
+        return chunks;
     }
 
-    private List<QuestionRequest> callGemini(String chunkText, boolean isChunked) {
-        List<Map<String, Object>> contents = List.of(
-                Map.of("role", "user", "parts", List.of(Map.of("text", chunkText)))
-        );
+    /**
+     * Divide uma única questão excepcionalmente grande.
+     */
+    private List<String> splitLargeQuestion(
+            String text
+    ) {
 
-        String systemPrompt = isChunked ? SYSTEM_PROMPT_BASE + CHUNKED_SUFFIX : SYSTEM_PROMPT_BASE;
-        String rawText = geminiClient.generateContent(systemPrompt, contents, questionArraySchema(), MAX_OUTPUT_TOKENS);
+        List<String> chunks =
+                new ArrayList<>();
+
+        int position = 0;
+
+        while (position < text.length()) {
+
+            int end =
+                    Math.min(
+                            position + MAX_CHUNK_CHARS,
+                            text.length()
+                    );
+
+            if (end < text.length()) {
+
+                int lineBreak =
+                        text.lastIndexOf(
+                                "\n\n",
+                                end
+                        );
+
+                if (lineBreak > position + 5_000) {
+
+                    end = lineBreak;
+                }
+            }
+
+            if (end <= position) {
+                break;
+            }
+
+            chunks.add(
+                    text.substring(
+                            position,
+                            end
+                    ).trim()
+            );
+
+            position = end;
+        }
+
+        return chunks;
+    }
+
+    /**
+     * Obtém os últimos caracteres de um texto.
+     */
+    private String getTail(
+            String text,
+            int amount
+    ) {
+
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+
+        if (text.length() <= amount) {
+            return text;
+        }
+
+        return text.substring(
+                text.length() - amount
+        );
+    }
+
+    /**
+     * Chamada individual ao Gemini.
+     */
+    private List<QuestionRequest> callGemini(
+            String chunkText,
+            boolean isChunked
+    ) {
+
+        if (chunkText == null ||
+                chunkText.isBlank()) {
+
+            return List.of();
+        }
+
+        List<Map<String, Object>> contents =
+                List.of(
+                        Map.of(
+                                "role",
+                                "user",
+                                "parts",
+                                List.of(
+                                        Map.of(
+                                                "text",
+                                                chunkText
+                                        )
+                                )
+                        )
+                );
+
+        String systemPrompt =
+                isChunked
+                        ? SYSTEM_PROMPT_BASE + CHUNKED_SUFFIX
+                        : SYSTEM_PROMPT_BASE;
+
+        String rawText =
+                geminiClient.generateContent(
+                        systemPrompt,
+                        contents,
+                        questionArraySchema(),
+                        MAX_OUTPUT_TOKENS
+                );
+
         return parseQuestions(rawText);
     }
 
     /**
-     * Schema OpenAPI-reduzido exigido pelo Gemini em generationConfig.responseSchema
-     * para forçar a saída em JSON estruturado (evita ter que "pedir educadamente"
-     * por JSON e torcer para o model não embrulhar em markdown).
+     * Schema JSON enviado ao Gemini.
+     *
+     * IMPORTANTE:
+     *
+     * Não usamos "nullable": true.
+     *
+     * Campos opcionais simplesmente não precisam aparecer na resposta.
+     *
+     * Isso evita incompatibilidades com structured output do Gemini.
      */
     private Map<String, Object> questionArraySchema() {
-        Map<String, Object> itemSchema = Map.of(
-                "type", "OBJECT",
-                "properties", Map.ofEntries(
-                        Map.entry("numero", Map.of("type", "INTEGER", "nullable", true)),
-                        Map.entry("enunciado", Map.of("type", "STRING")),
-                        Map.entry("alternativas", Map.of("type", "ARRAY", "items", Map.of("type", "STRING"))),
-                        Map.entry("disciplinaSugerida", Map.of("type", "STRING", "nullable", true)),
-                        Map.entry("assuntoSugerido", Map.of("type", "STRING", "nullable", true)),
-                        Map.entry("dificuldade", Map.of(
-                                "type", "STRING", "nullable", true,
-                                "enum", List.of("FACIL", "MEDIA", "DIFICIL"))),
-                        Map.entry("gabarito", Map.of("type", "STRING")),
-                        Map.entry("explicacao", Map.of("type", "STRING", "nullable", true)),
-                        Map.entry("pegadinha", Map.of("type", "STRING", "nullable", true)),
-                        Map.entry("banca", Map.of("type", "STRING", "nullable", true)),
-                        Map.entry("ano", Map.of("type", "INTEGER", "nullable", true))
-                ),
-                "required", List.of("enunciado", "alternativas", "gabarito")
-        );
 
-        return Map.of("type", "ARRAY", "items", itemSchema);
+        Map<String, Object> itemSchema =
+                Map.of(
+                        "type",
+                        "OBJECT",
+
+                        "properties",
+                        Map.ofEntries(
+
+                                Map.entry(
+                                        "numero",
+                                        Map.of(
+                                                "type",
+                                                "INTEGER"
+                                        )
+                                ),
+
+                                Map.entry(
+                                        "enunciado",
+                                        Map.of(
+                                                "type",
+                                                "STRING"
+                                        )
+                                ),
+
+                                Map.entry(
+                                        "alternativas",
+                                        Map.of(
+                                                "type",
+                                                "ARRAY",
+                                                "items",
+                                                Map.of(
+                                                        "type",
+                                                        "STRING"
+                                                )
+                                        )
+                                ),
+
+                                Map.entry(
+                                        "disciplinaSugerida",
+                                        Map.of(
+                                                "type",
+                                                "STRING"
+                                        )
+                                ),
+
+                                Map.entry(
+                                        "assuntoSugerido",
+                                        Map.of(
+                                                "type",
+                                                "STRING"
+                                        )
+                                ),
+
+                                Map.entry(
+                                        "dificuldade",
+                                        Map.of(
+                                                "type",
+                                                "STRING",
+                                                "enum",
+                                                List.of(
+                                                        "FACIL",
+                                                        "MEDIA",
+                                                        "DIFICIL"
+                                                )
+                                        )
+                                ),
+
+                                Map.entry(
+                                        "gabarito",
+                                        Map.of(
+                                                "type",
+                                                "STRING"
+                                        )
+                                ),
+
+                                Map.entry(
+                                        "explicacao",
+                                        Map.of(
+                                                "type",
+                                                "STRING"
+                                        )
+                                ),
+
+                                Map.entry(
+                                        "pegadinha",
+                                        Map.of(
+                                                "type",
+                                                "STRING"
+                                        )
+                                ),
+
+                                Map.entry(
+                                        "banca",
+                                        Map.of(
+                                                "type",
+                                                "STRING"
+                                        )
+                                ),
+
+                                Map.entry(
+                                        "ano",
+                                        Map.of(
+                                                "type",
+                                                "INTEGER"
+                                        )
+                                )
+                        ),
+
+                        "required",
+                        List.of(
+                                "enunciado",
+                                "alternativas",
+                                "gabarito"
+                        )
+                );
+
+        return Map.of(
+                "type",
+                "ARRAY",
+                "items",
+                itemSchema
+        );
     }
 
-    private List<QuestionRequest> parseQuestions(String rawText) {
-        // Com responseMimeType=application/json o Gemini normalmente já devolve JSON puro,
-        // mas mantemos essa limpeza como rede de segurança contra variações do model.
-        String cleaned = rawText.strip();
+    /**
+     * Converte o JSON retornado pelo Gemini para QuestionRequest.
+     */
+    private List<QuestionRequest> parseQuestions(
+            String rawText
+    ) {
+
+        if (rawText == null ||
+                rawText.isBlank()) {
+
+            throw new AiServiceException(
+                    HttpStatus.BAD_GATEWAY,
+                    "O Gemini retornou uma resposta vazia durante a extração."
+            );
+        }
+
+        String cleaned =
+                rawText.strip();
+
+        /*
+         * Remove markdown caso o modelo devolva
+         * ```json apesar do responseMimeType.
+         */
         if (cleaned.startsWith("```")) {
-            cleaned = cleaned.replaceFirst("^```(json)?", "").trim();
+
+            cleaned =
+                    cleaned.replaceFirst(
+                            "^```(?:json)?",
+                            ""
+                    ).trim();
+
             if (cleaned.endsWith("```")) {
-                cleaned = cleaned.substring(0, cleaned.length() - 3).trim();
+
+                cleaned =
+                        cleaned.substring(
+                                0,
+                                cleaned.length() - 3
+                        ).trim();
             }
         }
 
         JsonNode array;
+
         try {
-            array = objectMapper.readTree(cleaned);
+
+            array =
+                    objectMapper.readTree(
+                            cleaned
+                    );
+
         } catch (Exception e) {
+
+            log.error(
+                    "[PDF] Gemini retornou JSON inválido: {}",
+                    truncate(cleaned, 2_000),
+                    e
+            );
+
             throw new AiServiceException(
                     HttpStatus.BAD_GATEWAY,
-                    "Um dos trechos da extração não retornou um JSON válido.");
+                    "Um dos trechos da extração não retornou um JSON válido."
+            );
         }
 
-        List<QuestionRequest> result = new ArrayList<>();
+        if (array == null ||
+                !array.isArray()) {
+
+            throw new AiServiceException(
+                    HttpStatus.BAD_GATEWAY,
+                    "O Gemini não retornou uma lista de questões válida."
+            );
+        }
+
+        List<QuestionRequest> result =
+                new ArrayList<>();
+
         for (JsonNode node : array) {
-            List<String> alternativas = new ArrayList<>();
-            node.path("alternativas").forEach(alt -> alternativas.add(alt.asText("")));
 
-            result.add(new QuestionRequest(
-                    node.hasNonNull("numero") ? node.get("numero").asInt() : null,
-                    node.path("enunciado").asText(""),
-                    alternativas,
-                    parseDificuldade(node.path("dificuldade").asText(null)),
-                    node.path("gabarito").asText(""),
-                    node.hasNonNull("explicacao") ? node.get("explicacao").asText() : null,
-                    node.hasNonNull("pegadinha") ? node.get("pegadinha").asText() : null,
-                    node.hasNonNull("disciplinaSugerida") ? node.get("disciplinaSugerida").asText() : null,
-                    node.hasNonNull("assuntoSugerido") ? node.get("assuntoSugerido").asText() : null,
-                    node.hasNonNull("banca") ? node.get("banca").asText() : null,
-                    node.hasNonNull("ano") ? node.get("ano").asInt() : null
-            ));
+            if (node == null ||
+                    !node.isObject()) {
+
+                continue;
+            }
+
+            String enunciado =
+                    node.path(
+                            "enunciado"
+                    ).asText("");
+
+            List<String> alternativas =
+                    new ArrayList<>();
+
+            JsonNode alternativesNode =
+                    node.path(
+                            "alternativas"
+                    );
+
+            if (alternativesNode.isArray()) {
+
+                alternativesNode.forEach(
+                        alt ->
+                                alternativas.add(
+                                        alt.asText("")
+                                )
+                );
+            }
+
+            /*
+             * Não adiciona objetos completamente vazios.
+             */
+            if (enunciado.isBlank() &&
+                    alternativas.isEmpty()) {
+
+                continue;
+            }
+
+            result.add(
+                    new QuestionRequest(
+
+                            node.hasNonNull(
+                                    "numero"
+                            )
+                                    ? node.get(
+                                            "numero"
+                                    ).asInt()
+                                    : null,
+
+                            enunciado,
+
+                            alternativas,
+
+                            parseDificuldade(
+                                    node.hasNonNull(
+                                            "dificuldade"
+                                    )
+                                            ? node.get(
+                                                    "dificuldade"
+                                            ).asText()
+                                            : null
+                            ),
+
+                            node.path(
+                                    "gabarito"
+                            ).asText(""),
+
+                            node.hasNonNull(
+                                    "explicacao"
+                            )
+                                    ? node.get(
+                                            "explicacao"
+                                    ).asText()
+                                    : null,
+
+                            node.hasNonNull(
+                                    "pegadinha"
+                            )
+                                    ? node.get(
+                                            "pegadinha"
+                                    ).asText()
+                                    : null,
+
+                            node.hasNonNull(
+                                    "disciplinaSugerida"
+                            )
+                                    ? node.get(
+                                            "disciplinaSugerida"
+                                    ).asText()
+                                    : null,
+
+                            node.hasNonNull(
+                                    "assuntoSugerido"
+                            )
+                                    ? node.get(
+                                            "assuntoSugerido"
+                                    ).asText()
+                                    : null,
+
+                            node.hasNonNull(
+                                    "banca"
+                            )
+                                    ? node.get(
+                                            "banca"
+                                    ).asText()
+                                    : null,
+
+                            node.hasNonNull(
+                                    "ano"
+                            )
+                                    ? node.get(
+                                            "ano"
+                                    ).asInt()
+                                    : null
+                    )
+            );
         }
+
         return result;
     }
 
-    private com.nexus.nexus_api.model.QuestionDifficulty parseDificuldade(String raw) {
-        if (raw == null) return null;
-        try {
-            return com.nexus.nexus_api.model.QuestionDifficulty.valueOf(raw.trim().toUpperCase());
-        } catch (IllegalArgumentException e) {
+    /**
+     * Converte dificuldade para o enum da aplicação.
+     */
+    private com.nexus.nexus_api.model.QuestionDifficulty parseDificuldade(
+            String raw
+    ) {
+
+        if (raw == null ||
+                raw.isBlank()) {
+
             return null;
         }
+
+        try {
+
+            return com.nexus.nexus_api.model.QuestionDifficulty
+                    .valueOf(
+                            raw.trim()
+                                    .toUpperCase()
+                    );
+
+        } catch (IllegalArgumentException e) {
+
+            return null;
+        }
+    }
+
+    /**
+     * Identifica números duplicados antes do dedupe.
+     */
+    private List<Integer> findDuplicateNumeros(
+            List<QuestionRequest> items
+    ) {
+
+        Set<Integer> seen =
+                new HashSet<>();
+
+        Set<Integer> duplicated =
+                new TreeSet<>();
+
+        for (QuestionRequest q : items) {
+
+            if (q.numero() != null) {
+
+                if (!seen.add(q.numero())) {
+
+                    duplicated.add(
+                            q.numero()
+                    );
+                }
+            }
+        }
+
+        return new ArrayList<>(
+                duplicated
+        );
+    }
+
+    /**
+     * Remove duplicidades por número.
+     *
+     * Questões sem número não são deduplicadas.
+     */
+    private List<QuestionRequest> dedupeByNumero(
+            List<QuestionRequest> items
+    ) {
+
+        List<QuestionRequest> result =
+                new ArrayList<>();
+
+        Set<Integer> seen =
+                new HashSet<>();
+
+        for (QuestionRequest q : items) {
+
+            if (q.numero() != null) {
+
+                if (!seen.add(q.numero())) {
+
+                    continue;
+                }
+            }
+
+            result.add(q);
+        }
+
+        return result;
+    }
+
+    /**
+     * Limita texto de log para evitar logs gigantes.
+     */
+    private String truncate(
+            String text,
+            int max
+    ) {
+
+        if (text == null) {
+            return "";
+        }
+
+        if (text.length() <= max) {
+            return text;
+        }
+
+        return text.substring(
+                0,
+                max
+        ) + "...";
+    }
+
+    /**
+     * Representa um marcador encontrado no texto.
+     */
+    private record QuestionMarkerPosition(
+            int number,
+            int position
+    ) {
+    }
+
+    /**
+     * Representa uma questão individual antes de formar chunks.
+     */
+    private record QuestionBlock(
+            int number,
+            String text
+    ) {
     }
 }
