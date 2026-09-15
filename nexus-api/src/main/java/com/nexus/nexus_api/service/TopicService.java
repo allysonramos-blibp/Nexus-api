@@ -95,15 +95,15 @@ public class TopicService {
         List<Long> questionIds = questions.stream().map(Question::getId).toList();
 
         if (!questionIds.isEmpty()) {
-            answerRepository.deleteByQuestionIdIn(questionIds);
-            mockExamQuestionRepository.deleteByQuestionIdIn(questionIds);
-
             List<StudyError> errors = studyErrorRepository.findByQuestionIdIn(questionIds);
             if (!errors.isEmpty()) {
                 List<Long> errorIds = errors.stream().map(StudyError::getId).toList();
                 reviewRepository.deleteByStudyErrorIdIn(errorIds);
             }
             studyErrorRepository.deleteByQuestionIdIn(questionIds);
+
+            answerRepository.deleteByQuestionIdIn(questionIds);
+            mockExamQuestionRepository.deleteByQuestionIdIn(questionIds);
         }
 
         reviewRepository.deleteByTopicId(id);
