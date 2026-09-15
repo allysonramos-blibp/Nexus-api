@@ -99,6 +99,7 @@ public class QuestionService {
         answerRepository.deleteByQuestionId(id);
         mockExamQuestionRepository.deleteByQuestionId(id);
 
-        questionRepository.delete(question);
+        questionRepository.deleteQuestionOptionsByQuestionId(id);
+        questionRepository.deleteByIdCustom(id);
     }
 }

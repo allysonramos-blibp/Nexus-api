@@ -146,18 +146,19 @@ public class StudyPlanService {
             reviewRepository.deleteByTopicIdIn(topicIds);
         }
 
-        // 5. Delete questions, topics, subjects and plan
-        for (Subject s : subjects) {
-            List<Topic> topics = topicRepository.findBySubjectId(s.getId());
-            for (Topic t : topics) {
-                List<Question> questions = questionRepository.findByTopicId(t.getId());
-                questionRepository.deleteAll(questions);
-                topicRepository.delete(t);
-            }
-            subjectRepository.delete(s);
+        // 5. Delete questions, topics, subjects and plan directly by IDs
+        if (!questionIds.isEmpty()) {
+            questionRepository.deleteQuestionOptionsByQuestionIdIn(questionIds);
+            questionRepository.deleteByIdIn(questionIds);
+        }
+        if (!topicIds.isEmpty()) {
+            topicRepository.deleteByIdIn(topicIds);
+        }
+        if (!subjectIds.isEmpty()) {
+            subjectRepository.deleteByIdIn(subjectIds);
         }
 
-        studyPlanRepository.delete(plan);
+        studyPlanRepository.deleteByIdCustom(id);
     }
 
     /** Monta o DTO de resposta com as contagens e o progresso calculado sob demanda (nunca persistido). */

@@ -107,7 +107,12 @@ public class TopicService {
         }
 
         reviewRepository.deleteByTopicId(id);
-        questionRepository.deleteAll(questions);
-        topicRepository.delete(topic);
+
+        if (!questionIds.isEmpty()) {
+            questionRepository.deleteQuestionOptionsByQuestionIdIn(questionIds);
+            questionRepository.deleteByIdIn(questionIds);
+        }
+
+        topicRepository.deleteByIdIn(List.of(id));
     }
 }

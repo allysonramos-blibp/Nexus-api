@@ -10,6 +10,24 @@ import java.util.List;
 public interface QuestionRepository extends JpaRepository<Question, Long> {
     List<Question> findByTopicId(Long topicId);
 
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("DELETE FROM Question q WHERE q.id IN (:ids)")
+    void deleteByIdIn(@Param("ids") List<Long> ids);
+
+    @org.springframework.data.jpa.repository.Modifying
+    @Query(value = "DELETE FROM question_options WHERE question_id IN (:ids)", nativeQuery = true)
+    void deleteQuestionOptionsByQuestionIdIn(@Param("ids") List<Long> ids);
+
+    @org.springframework.data.jpa.repository.Modifying
+    @Query(value = "DELETE FROM question_options WHERE question_id = :id", nativeQuery = true)
+    void deleteQuestionOptionsByQuestionId(@Param("id") Long id);
+
+
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("DELETE FROM Question q WHERE q.id = :id")
+    void deleteByIdCustom(@Param("id") Long id);
+
+
     long countByTopicSubjectStudyPlanId(Long studyPlanId);
 
     /** Sorteio de questões dentre as matérias selecionadas, usado na criação de simulados. */

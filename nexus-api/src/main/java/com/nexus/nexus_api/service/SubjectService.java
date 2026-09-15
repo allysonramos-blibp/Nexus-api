@@ -130,12 +130,14 @@ public class SubjectService {
             reviewRepository.deleteByTopicIdIn(topicIds);
         }
 
-        for (Topic t : topics) {
-            List<Question> questions = questionRepository.findByTopicId(t.getId());
-            questionRepository.deleteAll(questions);
-            topicRepository.delete(t);
+        if (!questionIds.isEmpty()) {
+            questionRepository.deleteQuestionOptionsByQuestionIdIn(questionIds);
+            questionRepository.deleteByIdIn(questionIds);
+        }
+        if (!topicIds.isEmpty()) {
+            topicRepository.deleteByIdIn(topicIds);
         }
 
-        subjectRepository.delete(subject);
+        subjectRepository.deleteByIdIn(List.of(id));
     }
 }
