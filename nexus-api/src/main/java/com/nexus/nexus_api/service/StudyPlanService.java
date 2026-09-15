@@ -18,8 +18,10 @@ import org.springframework.stereotype.Service;
 import com.nexus.nexus_api.model.Question;
 import com.nexus.nexus_api.model.StudyError;
 import com.nexus.nexus_api.model.Subject;
+import com.nexus.nexus_api.model.MockExam;
 import com.nexus.nexus_api.model.Topic;
 import com.nexus.nexus_api.repository.MockExamQuestionRepository;
+import com.nexus.nexus_api.repository.MockExamRepository;
 import com.nexus.nexus_api.repository.ReviewRepository;
 import com.nexus.nexus_api.repository.StudyErrorRepository;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,6 +40,7 @@ public class StudyPlanService {
     private final QuestionRepository questionRepository;
     private final AnswerRepository answerRepository;
     private final MockExamQuestionRepository mockExamQuestionRepository;
+    private final MockExamRepository mockExamRepository;
     private final StudyErrorRepository studyErrorRepository;
     private final ReviewRepository reviewRepository;
 
@@ -93,6 +96,7 @@ public class StudyPlanService {
         StudyPlan plan = findByIdOwnedByCurrentUser(id);
 
         List<Subject> subjects = subjectRepository.findByStudyPlanId(id);
+        List<Long> subjectIds = subjects.stream().map(Subject::getId).toList();
         List<Long> questionIds = new ArrayList<>();
         List<Long> topicIds = new ArrayList<>();
 
@@ -107,6 +111,23 @@ public class StudyPlanService {
             }
         }
 
+        // 1. Simulates referencing this plan directly
+        List<MockExam> examsDoPlano = mockExamRepository.findByStudyPlanId(id);
+        if (!examsDoPlano.isEmpty()) {
+            List<Long> examIds = examsDoPlano.stream().map(MockExam::getId).toList();
+            for (Long examId : examIds) {
+                mockExamQuestionRepository.deleteByMockExamId(examId);
+            }
+            mockExamRepository.deleteMockExamSubjectsByMockExamIdIn(examIds);
+            mockExamRepository.deleteAll(examsDoPlano);
+        }
+
+        // 2. Clear many-to-many references in mock_exam_subjects for all subjects of this plan
+        if (!subjectIds.isEmpty()) {
+            mockExamRepository.deleteMockExamSubjectsBySubjectIdIn(subjectIds);
+        }
+
+        // 3. Clear questions cascade (answers, exam_questions, errors, reviews)
         if (!questionIds.isEmpty()) {
             answerRepository.deleteByQuestionIdIn(questionIds);
             mockExamQuestionRepository.deleteByQuestionIdIn(questionIds);
@@ -119,10 +140,12 @@ public class StudyPlanService {
             studyErrorRepository.deleteByQuestionIdIn(questionIds);
         }
 
+        // 4. Clear topic reviews
         if (!topicIds.isEmpty()) {
             reviewRepository.deleteByTopicIdIn(topicIds);
         }
 
+        // 5. Delete questions, topics, subjects and plan
         for (Subject s : subjects) {
             List<Topic> topics = topicRepository.findBySubjectId(s.getId());
             for (Topic t : topics) {

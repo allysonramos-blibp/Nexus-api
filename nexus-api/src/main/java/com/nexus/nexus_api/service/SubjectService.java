@@ -14,6 +14,7 @@ import com.nexus.nexus_api.model.StudyError;
 import com.nexus.nexus_api.model.Topic;
 import com.nexus.nexus_api.repository.AnswerRepository;
 import com.nexus.nexus_api.repository.MockExamQuestionRepository;
+import com.nexus.nexus_api.repository.MockExamRepository;
 import com.nexus.nexus_api.repository.QuestionRepository;
 import com.nexus.nexus_api.repository.ReviewRepository;
 import com.nexus.nexus_api.repository.StudyErrorRepository;
@@ -33,6 +34,7 @@ public class SubjectService {
     private final QuestionRepository questionRepository;
     private final AnswerRepository answerRepository;
     private final MockExamQuestionRepository mockExamQuestionRepository;
+    private final MockExamRepository mockExamRepository;
     private final StudyErrorRepository studyErrorRepository;
     private final ReviewRepository reviewRepository;
 
@@ -120,6 +122,9 @@ public class SubjectService {
             }
             studyErrorRepository.deleteByQuestionIdIn(questionIds);
         }
+
+        // Limpa ligações na tabela many-to-many mock_exam_subjects
+        mockExamRepository.deleteMockExamSubjectsBySubjectId(id);
 
         if (!topicIds.isEmpty()) {
             reviewRepository.deleteByTopicIdIn(topicIds);
