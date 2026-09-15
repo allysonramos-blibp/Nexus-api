@@ -9,6 +9,17 @@ import com.nexus.nexus_api.util.NameNormalizer;
 import com.nexus.nexus_api.util.SecurityUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import com.nexus.nexus_api.model.Question;
+import com.nexus.nexus_api.model.StudyError;
+import com.nexus.nexus_api.model.Topic;
+import com.nexus.nexus_api.repository.AnswerRepository;
+import com.nexus.nexus_api.repository.MockExamQuestionRepository;
+import com.nexus.nexus_api.repository.QuestionRepository;
+import com.nexus.nexus_api.repository.ReviewRepository;
+import com.nexus.nexus_api.repository.StudyErrorRepository;
+import com.nexus.nexus_api.repository.TopicRepository;
+import org.springframework.transaction.annotation.Transactional;
+import java.util.ArrayList;
 
 import java.util.List;
 
@@ -18,6 +29,12 @@ public class SubjectService {
 
     private final SubjectRepository subjectRepository;
     private final StudyPlanService studyPlanService;
+    private final TopicRepository topicRepository;
+    private final QuestionRepository questionRepository;
+    private final AnswerRepository answerRepository;
+    private final MockExamQuestionRepository mockExamQuestionRepository;
+    private final StudyErrorRepository studyErrorRepository;
+    private final ReviewRepository reviewRepository;
 
     public Subject create(Long studyPlanId, SubjectRequest request) {
         // findByIdOwnedByCurrentUser já barra com 403 se o plano não for do usuário autenticado.
@@ -76,8 +93,44 @@ public class SubjectService {
         return subjectRepository.save(subject);
     }
 
+    @Transactional
     public void delete(Long id) {
         Subject subject = findByIdOwnedByCurrentUser(id);
+
+        List<Topic> topics = topicRepository.findBySubjectId(id);
+        List<Long> questionIds = new ArrayList<>();
+        List<Long> topicIds = new ArrayList<>();
+
+        for (Topic t : topics) {
+            topicIds.add(t.getId());
+            List<Question> questions = questionRepository.findByTopicId(t.getId());
+            for (Question q : questions) {
+                questionIds.add(q.getId());
+            }
+        }
+
+        if (!questionIds.isEmpty()) {
+            answerRepository.deleteByQuestionIdIn(questionIds);
+            mockExamQuestionRepository.deleteByQuestionIdIn(questionIds);
+
+            List<StudyError> errors = studyErrorRepository.findByQuestionIdIn(questionIds);
+            if (!errors.isEmpty()) {
+                List<Long> errorIds = errors.stream().map(StudyError::getId).toList();
+                reviewRepository.deleteByStudyErrorIdIn(errorIds);
+            }
+            studyErrorRepository.deleteByQuestionIdIn(questionIds);
+        }
+
+        if (!topicIds.isEmpty()) {
+            reviewRepository.deleteByTopicIdIn(topicIds);
+        }
+
+        for (Topic t : topics) {
+            List<Question> questions = questionRepository.findByTopicId(t.getId());
+            questionRepository.deleteAll(questions);
+            topicRepository.delete(t);
+        }
+
         subjectRepository.delete(subject);
     }
 }

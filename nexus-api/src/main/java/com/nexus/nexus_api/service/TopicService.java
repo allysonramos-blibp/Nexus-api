@@ -9,6 +9,15 @@ import com.nexus.nexus_api.util.NameNormalizer;
 import com.nexus.nexus_api.util.SecurityUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import com.nexus.nexus_api.model.Question;
+import com.nexus.nexus_api.model.StudyError;
+import com.nexus.nexus_api.repository.AnswerRepository;
+import com.nexus.nexus_api.repository.MockExamQuestionRepository;
+import com.nexus.nexus_api.repository.QuestionRepository;
+import com.nexus.nexus_api.repository.ReviewRepository;
+import com.nexus.nexus_api.repository.StudyErrorRepository;
+import org.springframework.transaction.annotation.Transactional;
+import java.util.ArrayList;
 
 import java.util.List;
 
@@ -18,6 +27,11 @@ public class TopicService {
 
     private final TopicRepository topicRepository;
     private final SubjectService subjectService;
+    private final QuestionRepository questionRepository;
+    private final AnswerRepository answerRepository;
+    private final MockExamQuestionRepository mockExamQuestionRepository;
+    private final StudyErrorRepository studyErrorRepository;
+    private final ReviewRepository reviewRepository;
 
     public Topic create(Long subjectId, TopicRequest request) {
         Subject subject = subjectService.findByIdOwnedByCurrentUser(subjectId);
@@ -73,8 +87,27 @@ public class TopicService {
         return topicRepository.save(topic);
     }
 
+    @Transactional
     public void delete(Long id) {
         Topic topic = findByIdOwnedByCurrentUser(id);
+
+        List<Question> questions = questionRepository.findByTopicId(id);
+        List<Long> questionIds = questions.stream().map(Question::getId).toList();
+
+        if (!questionIds.isEmpty()) {
+            answerRepository.deleteByQuestionIdIn(questionIds);
+            mockExamQuestionRepository.deleteByQuestionIdIn(questionIds);
+
+            List<StudyError> errors = studyErrorRepository.findByQuestionIdIn(questionIds);
+            if (!errors.isEmpty()) {
+                List<Long> errorIds = errors.stream().map(StudyError::getId).toList();
+                reviewRepository.deleteByStudyErrorIdIn(errorIds);
+            }
+            studyErrorRepository.deleteByQuestionIdIn(questionIds);
+        }
+
+        reviewRepository.deleteByTopicId(id);
+        questionRepository.deleteAll(questions);
         topicRepository.delete(topic);
     }
 }
