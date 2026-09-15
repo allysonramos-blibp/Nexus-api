@@ -119,6 +119,7 @@ public class StudyPlanService {
                 mockExamQuestionRepository.deleteByMockExamId(examId);
             }
             mockExamRepository.deleteMockExamSubjectsByMockExamIdIn(examIds);
+            answerRepository.deleteByMockExamIdIn(examIds);
             mockExamRepository.deleteAll(examsDoPlano);
         }
 

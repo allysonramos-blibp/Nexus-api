@@ -31,6 +31,13 @@ public interface AnswerRepository extends JpaRepository<Answer, Long> {
     @Modifying
     @Query("DELETE FROM Answer a WHERE a.question.id IN (:questionIds)")
     void deleteByQuestionIdIn(@Param("questionIds") List<Long> questionIds);
+    @Modifying
+    @Query("DELETE FROM Answer a WHERE a.mockExam.id IN (:mockExamIds)")
+    void deleteByMockExamIdIn(@Param("mockExamIds") List<Long> mockExamIds);
+
+    @Modifying
+    @Query("DELETE FROM Answer a WHERE a.mockExam.id = :mockExamId")
+    void deleteByMockExamId(@Param("mockExamId") Long mockExamId);
 
     @Query("SELECT new com.nexus.nexus_api.dto.SubjectPerformanceDto(" +
             "s.id, s.nome, COUNT(a), SUM(CASE WHEN a.correta = true THEN 1L ELSE 0L END)) " +
