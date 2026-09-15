@@ -5,6 +5,11 @@ import com.nexus.nexus_api.exception.ResourceNotFoundException;
 import com.nexus.nexus_api.model.Question;
 import com.nexus.nexus_api.model.Topic;
 import com.nexus.nexus_api.repository.QuestionRepository;
+import com.nexus.nexus_api.model.StudyError;
+import com.nexus.nexus_api.repository.AnswerRepository;
+import com.nexus.nexus_api.repository.MockExamQuestionRepository;
+import com.nexus.nexus_api.repository.ReviewRepository;
+import com.nexus.nexus_api.repository.StudyErrorRepository;
 import com.nexus.nexus_api.util.SecurityUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -19,6 +24,10 @@ public class QuestionService {
 
     private final QuestionRepository questionRepository;
     private final TopicService topicService;
+    private final AnswerRepository answerRepository;
+    private final MockExamQuestionRepository mockExamQuestionRepository;
+    private final StudyErrorRepository studyErrorRepository;
+    private final ReviewRepository reviewRepository;
 
     /** Público para reaproveitamento por outros services (ex.: importação de PDF por plano). */
     public Question build(Topic topic, QuestionRequest request) {
@@ -77,8 +86,19 @@ public class QuestionService {
         return questionRepository.save(question);
     }
 
+    @Transactional
     public void delete(Long id) {
         Question question = findByIdOwnedByCurrentUser(id);
+
+        answerRepository.deleteByQuestionId(id);
+        mockExamQuestionRepository.deleteByQuestionId(id);
+
+        List<StudyError> errors = studyErrorRepository.findByQuestionId(id);
+        for (StudyError err : errors) {
+            reviewRepository.deleteByStudyErrorId(err.getId());
+        }
+        studyErrorRepository.deleteByQuestionId(id);
+
         questionRepository.delete(question);
     }
 }

@@ -15,6 +15,15 @@ import com.nexus.nexus_api.repository.UserRepository;
 import com.nexus.nexus_api.util.SecurityUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import com.nexus.nexus_api.model.Question;
+import com.nexus.nexus_api.model.StudyError;
+import com.nexus.nexus_api.model.Subject;
+import com.nexus.nexus_api.model.Topic;
+import com.nexus.nexus_api.repository.MockExamQuestionRepository;
+import com.nexus.nexus_api.repository.ReviewRepository;
+import com.nexus.nexus_api.repository.StudyErrorRepository;
+import org.springframework.transaction.annotation.Transactional;
+import java.util.ArrayList;
 
 import java.util.List;
 
@@ -28,6 +37,9 @@ public class StudyPlanService {
     private final TopicRepository topicRepository;
     private final QuestionRepository questionRepository;
     private final AnswerRepository answerRepository;
+    private final MockExamQuestionRepository mockExamQuestionRepository;
+    private final StudyErrorRepository studyErrorRepository;
+    private final ReviewRepository reviewRepository;
 
     public StudyPlan create(StudyPlanRequest request) {
         Long currentUserId = SecurityUtils.getCurrentUserId();
@@ -76,8 +88,51 @@ public class StudyPlanService {
         return studyPlanRepository.save(plan);
     }
 
+    @Transactional
     public void delete(Long id) {
         StudyPlan plan = findByIdOwnedByCurrentUser(id);
+
+        List<Subject> subjects = subjectRepository.findByStudyPlanId(id);
+        List<Long> questionIds = new ArrayList<>();
+        List<Long> topicIds = new ArrayList<>();
+
+        for (Subject s : subjects) {
+            List<Topic> topics = topicRepository.findBySubjectId(s.getId());
+            for (Topic t : topics) {
+                topicIds.add(t.getId());
+                List<Question> questions = questionRepository.findByTopicId(t.getId());
+                for (Question q : questions) {
+                    questionIds.add(q.getId());
+                }
+            }
+        }
+
+        if (!questionIds.isEmpty()) {
+            answerRepository.deleteByQuestionIdIn(questionIds);
+            mockExamQuestionRepository.deleteByQuestionIdIn(questionIds);
+
+            List<StudyError> errors = studyErrorRepository.findByQuestionIdIn(questionIds);
+            if (!errors.isEmpty()) {
+                List<Long> errorIds = errors.stream().map(StudyError::getId).toList();
+                reviewRepository.deleteByStudyErrorIdIn(errorIds);
+            }
+            studyErrorRepository.deleteByQuestionIdIn(questionIds);
+        }
+
+        if (!topicIds.isEmpty()) {
+            reviewRepository.deleteByTopicIdIn(topicIds);
+        }
+
+        for (Subject s : subjects) {
+            List<Topic> topics = topicRepository.findBySubjectId(s.getId());
+            for (Topic t : topics) {
+                List<Question> questions = questionRepository.findByTopicId(t.getId());
+                questionRepository.deleteAll(questions);
+                topicRepository.delete(t);
+            }
+            subjectRepository.delete(s);
+        }
+
         studyPlanRepository.delete(plan);
     }
 
