@@ -90,14 +90,14 @@ public class QuestionService {
     public void delete(Long id) {
         Question question = findByIdOwnedByCurrentUser(id);
 
-        answerRepository.deleteByQuestionId(id);
-        mockExamQuestionRepository.deleteByQuestionId(id);
-
         List<StudyError> errors = studyErrorRepository.findByQuestionId(id);
         for (StudyError err : errors) {
             reviewRepository.deleteByStudyErrorId(err.getId());
         }
         studyErrorRepository.deleteByQuestionId(id);
+
+        answerRepository.deleteByQuestionId(id);
+        mockExamQuestionRepository.deleteByQuestionId(id);
 
         questionRepository.delete(question);
     }

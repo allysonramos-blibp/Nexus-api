@@ -127,17 +127,17 @@ public class StudyPlanService {
             mockExamRepository.deleteMockExamSubjectsBySubjectIdIn(subjectIds);
         }
 
-        // 3. Clear questions cascade (answers, exam_questions, errors, reviews)
+        // 3. Clear questions cascade (reviews -> errors -> answers -> exam_questions)
         if (!questionIds.isEmpty()) {
-            answerRepository.deleteByQuestionIdIn(questionIds);
-            mockExamQuestionRepository.deleteByQuestionIdIn(questionIds);
-
             List<StudyError> errors = studyErrorRepository.findByQuestionIdIn(questionIds);
             if (!errors.isEmpty()) {
                 List<Long> errorIds = errors.stream().map(StudyError::getId).toList();
                 reviewRepository.deleteByStudyErrorIdIn(errorIds);
             }
             studyErrorRepository.deleteByQuestionIdIn(questionIds);
+
+            answerRepository.deleteByQuestionIdIn(questionIds);
+            mockExamQuestionRepository.deleteByQuestionIdIn(questionIds);
         }
 
         // 4. Clear topic reviews
