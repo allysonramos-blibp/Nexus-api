@@ -69,7 +69,7 @@ public class PdfQuestionExtractionService {
      *
      * A divisão real respeita os marcadores encontrados no PDF.
      */
-    private static final int QUESTIONS_PER_CHUNK = 8;
+    private static final int QUESTIONS_PER_CHUNK = 6;
 
     /*
      * Quantidade máxima de caracteres permitida em um chunk.
@@ -77,7 +77,27 @@ public class PdfQuestionExtractionService {
      * Essa proteção existe para casos em que uma única questão seja
      * extremamente longa.
      */
-    private static final int MAX_CHUNK_CHARS = 22_000;
+    private static final int MAX_CHUNK_CHARS = 10_000;
+
+    /*
+     * Tentativas por trecho antes de considerar o trecho perdido.
+     */
+    private static final int MAX_ATTEMPTS_PER_CHUNK = 3;
+
+    /*
+     * Profundidade máxima de subdivisão de um trecho problemático.
+     */
+    private static final int MAX_SPLIT_DEPTH = 2;
+
+    /*
+     * Abaixo disso não vale a pena continuar dividindo.
+     */
+    private static final int MIN_SPLIT_CHARS = 1_200;
+
+    /*
+     * Questões por chamada na segunda passada (recuperação).
+     */
+    private static final int RECOVERY_QUESTIONS_PER_CHUNK = 3;
 
     /*
      * Sobreposição entre chunks.
@@ -113,7 +133,7 @@ public class PdfQuestionExtractionService {
      * Assinale...
      */
     private static final Pattern QUESTION_MARKER = Pattern.compile(
-            "(?im)^\\s*(?:quest[aã]o\\s+)?0*([1-9]\\d{0,2})\\s*(?:[.)\\-]\\s|$)"
+            "(?im)^[ \\t\\u00a0]*(?:quest[aã]o|quest\\.)?[ \\t\\u00a0]*0*([1-9]\\d{0,2})[ \\t\\u00a0]*(?:[.)\\-–—:]+[ \\t\\u00a0]*|$)"
     );
 
     private static final String SYSTEM_PROMPT_BASE = """
@@ -363,7 +383,7 @@ public class PdfQuestionExtractionService {
                 );
 
                 List<QuestionRequest> fromChunk =
-                        callGemini(chunk, chunks.size() > 1);
+                        callGeminiResilient(chunk, chunks.size() > 1, 0);
 
                 log.info(
                         "[PDF] Chunk {}/{} concluído: {} questão(ões)",
@@ -397,6 +417,30 @@ public class PdfQuestionExtractionService {
                         e
                 );
             }
+        }
+
+        /*
+         * Segunda passada: tenta recuperar as questões detectadas no PDF
+         * que não vieram na primeira rodada (inclusive as de chunks que falharam).
+         */
+        try {
+
+            List<QuestionRequest> recuperadas =
+                    recoverMissingQuestions(text, numerosDetectados, extractedRaw);
+
+            if (!recuperadas.isEmpty()) {
+
+                log.info(
+                        "[PDF] Segunda passada recuperou {} questão(ões)",
+                        recuperadas.size()
+                );
+
+                extractedRaw.addAll(recuperadas);
+            }
+
+        } catch (Exception e) {
+
+            log.error("[PDF] Falha na segunda passada de recuperação", e);
         }
 
         /*
@@ -590,46 +634,7 @@ public class PdfQuestionExtractionService {
         }
 
         List<QuestionBlock> questionBlocks =
-                new ArrayList<>();
-
-        for (int i = 0; i < markers.size(); i++) {
-
-            QuestionMarkerPosition current =
-                    markers.get(i);
-
-            int start =
-                    current.position();
-
-            int end;
-
-            if (i + 1 < markers.size()) {
-
-                end =
-                        markers.get(i + 1).position();
-
-            } else {
-
-                end =
-                        text.length();
-            }
-
-            if (start >= end) {
-                continue;
-            }
-
-            String block =
-                    text.substring(start, end).trim();
-
-            if (!block.isBlank()) {
-
-                questionBlocks.add(
-                        new QuestionBlock(
-                                current.number(),
-                                block
-                        )
-                );
-            }
-        }
+                buildQuestionBlocks(text, markers);
 
         if (questionBlocks.isEmpty()) {
 
@@ -1406,6 +1411,294 @@ public class PdfQuestionExtractionService {
                 0,
                 max
         ) + "...";
+    }
+
+    /**
+     * Monta os blocos de texto de cada questão a partir dos marcadores.
+     */
+    private List<QuestionBlock> buildQuestionBlocks(
+            String text,
+            List<QuestionMarkerPosition> markers
+    ) {
+
+        List<QuestionBlock> questionBlocks =
+                new ArrayList<>();
+
+        for (int i = 0; i < markers.size(); i++) {
+
+            QuestionMarkerPosition current =
+                    markers.get(i);
+
+            int start =
+                    current.position();
+
+            int end =
+                    i + 1 < markers.size()
+                            ? markers.get(i + 1).position()
+                            : text.length();
+
+            if (start >= end) {
+                continue;
+            }
+
+            String block =
+                    text.substring(start, end).trim();
+
+            if (!block.isBlank()) {
+
+                questionBlocks.add(
+                        new QuestionBlock(
+                                current.number(),
+                                block
+                        )
+                );
+            }
+        }
+
+        return questionBlocks;
+    }
+
+    /**
+     * Chama o Gemini com novas tentativas e, em último caso,
+     * divide o trecho ao meio para contornar respostas truncadas.
+     */
+    private List<QuestionRequest> callGeminiResilient(
+            String chunkText,
+            boolean isChunked,
+            int depth
+    ) {
+
+        RuntimeException last = null;
+
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS_PER_CHUNK; attempt++) {
+
+            try {
+
+                return callGemini(chunkText, isChunked);
+
+            } catch (RuntimeException e) {
+
+                last = e;
+
+                log.warn(
+                        "[PDF] Tentativa {}/{} do trecho falhou: {}",
+                        attempt,
+                        MAX_ATTEMPTS_PER_CHUNK,
+                        e.getMessage()
+                );
+
+                if (attempt < MAX_ATTEMPTS_PER_CHUNK) {
+                    sleepQuietly(attempt * 1_500L);
+                }
+            }
+        }
+
+        if (depth < MAX_SPLIT_DEPTH &&
+                chunkText.length() > MIN_SPLIT_CHARS) {
+
+            List<String> halves =
+                    splitInHalf(chunkText);
+
+            if (halves.size() == 2) {
+
+                List<QuestionRequest> partial =
+                        new ArrayList<>();
+
+                boolean algumaMetadeOk = false;
+
+                for (String half : halves) {
+
+                    try {
+
+                        partial.addAll(
+                                callGeminiResilient(half, true, depth + 1)
+                        );
+
+                        algumaMetadeOk = true;
+
+                    } catch (RuntimeException e) {
+
+                        log.error(
+                                "[PDF] Metade do trecho falhou: {}",
+                                e.getMessage()
+                        );
+                    }
+                }
+
+                if (algumaMetadeOk) {
+                    return partial;
+                }
+            }
+        }
+
+        throw last;
+    }
+
+    /**
+     * Divide um trecho em duas partes, preferindo o marcador de questão
+     * mais próximo do meio.
+     */
+    private List<String> splitInHalf(String text) {
+
+        int middle = text.length() / 2;
+
+        int cut = -1;
+
+        Matcher matcher = QUESTION_MARKER.matcher(text);
+
+        while (matcher.find()) {
+
+            int start = matcher.start();
+
+            if (start <= 0 || start >= text.length()) {
+                continue;
+            }
+
+            if (cut < 0 ||
+                    Math.abs(start - middle) < Math.abs(cut - middle)) {
+
+                cut = start;
+            }
+        }
+
+        if (cut <= 0) {
+            cut = text.lastIndexOf("\n\n", middle);
+        }
+
+        if (cut <= 0 || cut >= text.length() - 1) {
+            cut = middle;
+        }
+
+        String first = text.substring(0, cut).trim();
+        String second = text.substring(cut).trim();
+
+        if (first.isBlank() || second.isBlank()) {
+            return List.of(text);
+        }
+
+        return List.of(first, second);
+    }
+
+    /**
+     * Segunda passada: reenvia apenas os blocos das questões que ficaram faltando.
+     */
+    private List<QuestionRequest> recoverMissingQuestions(
+            String text,
+            Set<Integer> numerosDetectados,
+            List<QuestionRequest> jaExtraidas
+    ) {
+
+        Set<Integer> presentes = new HashSet<>();
+
+        for (QuestionRequest q : jaExtraidas) {
+
+            if (q.numero() != null) {
+                presentes.add(q.numero());
+            }
+        }
+
+        List<Integer> faltantes =
+                numerosDetectados.stream()
+                        .filter(numero -> !presentes.contains(numero))
+                        .sorted()
+                        .toList();
+
+        if (faltantes.isEmpty()) {
+            return List.of();
+        }
+
+        List<QuestionMarkerPosition> markers =
+                findQuestionMarkers(text);
+
+        if (markers.isEmpty()) {
+            return List.of();
+        }
+
+        Map<Integer, String> porNumero = new LinkedHashMap<>();
+
+        for (QuestionBlock block : buildQuestionBlocks(text, markers)) {
+            porNumero.putIfAbsent(block.number(), block.text());
+        }
+
+        log.info(
+                "[PDF] Tentando recuperar {} questão(ões) ausentes: {}",
+                faltantes.size(),
+                faltantes
+        );
+
+        List<QuestionRequest> recuperadas = new ArrayList<>();
+
+        StringBuilder buffer = new StringBuilder();
+
+        int noBuffer = 0;
+
+        for (Integer numero : faltantes) {
+
+            String bloco = porNumero.get(numero);
+
+            if (bloco == null || bloco.isBlank()) {
+                continue;
+            }
+
+            boolean cheio =
+                    noBuffer >= RECOVERY_QUESTIONS_PER_CHUNK ||
+                    (noBuffer > 0 &&
+                            buffer.length() + bloco.length() > MAX_CHUNK_CHARS);
+
+            if (cheio) {
+
+                recuperadas.addAll(
+                        callGeminiQuietly(buffer.toString())
+                );
+
+                buffer.setLength(0);
+                noBuffer = 0;
+            }
+
+            buffer.append(bloco).append("\n\n");
+            noBuffer++;
+        }
+
+        if (noBuffer > 0) {
+
+            recuperadas.addAll(
+                    callGeminiQuietly(buffer.toString())
+            );
+        }
+
+        return recuperadas;
+    }
+
+    /**
+     * Chamada que nunca propaga erro: usada na recuperação.
+     */
+    private List<QuestionRequest> callGeminiQuietly(String chunkText) {
+
+        try {
+
+            return callGeminiResilient(chunkText, true, 0);
+
+        } catch (RuntimeException e) {
+
+            log.error(
+                    "[PDF] Recuperação falhou para um trecho: {}",
+                    e.getMessage()
+            );
+
+            return List.of();
+        }
+    }
+
+    private void sleepQuietly(long millis) {
+
+        try {
+
+            Thread.sleep(millis);
+
+        } catch (InterruptedException e) {
+
+            Thread.currentThread().interrupt();
+        }
     }
 
     /**
