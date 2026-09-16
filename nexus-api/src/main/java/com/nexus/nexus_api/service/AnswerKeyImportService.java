@@ -37,8 +37,8 @@ public class AnswerKeyImportService {
         // Se o usuário não passou filtro explícito, tentamos inferir do nome do plano
         // Por exemplo se o plano se chama "Dataprev - Prova Tipo 3" ou "ATI Tipo 3", busca "TIPO 3"
         String activeFilter = targetFilter;
-        if ((activeFilter == null || activeFilter.isBlank()) && plan.getNome() != null) {
-            String planName = plan.getNome();
+        if ((activeFilter == null || activeFilter.isBlank()) && plan.getTitulo() != null) {
+            String planName = plan.getTitulo();
             if (planName.toLowerCase().contains("tipo 3") || planName.toLowerCase().contains("amarela")) {
                 activeFilter = "tipo 3";
             } else if (planName.toLowerCase().contains("tipo 1") || planName.toLowerCase().contains("branca")) {

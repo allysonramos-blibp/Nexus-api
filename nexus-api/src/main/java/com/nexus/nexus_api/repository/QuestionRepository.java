@@ -10,6 +10,8 @@ import java.util.List;
 public interface QuestionRepository extends JpaRepository<Question, Long> {
     List<Question> findByTopicId(Long topicId);
 
+    List<Question> findByTopicSubjectStudyPlanId(Long studyPlanId);
+
     @org.springframework.data.jpa.repository.Modifying
     @Query("DELETE FROM Question q WHERE q.id IN (:ids)")
     void deleteByIdIn(@Param("ids") List<Long> ids);
@@ -22,11 +24,9 @@ public interface QuestionRepository extends JpaRepository<Question, Long> {
     @Query(value = "DELETE FROM question_options WHERE question_id = :id", nativeQuery = true)
     void deleteQuestionOptionsByQuestionId(@Param("id") Long id);
 
-
     @org.springframework.data.jpa.repository.Modifying
     @Query("DELETE FROM Question q WHERE q.id = :id")
     void deleteByIdCustom(@Param("id") Long id);
-
 
     long countByTopicSubjectStudyPlanId(Long studyPlanId);
 
