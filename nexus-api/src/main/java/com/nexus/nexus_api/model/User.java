@@ -27,38 +27,66 @@ public class User {
     private String password;
 
     @Builder.Default
-    @Column(nullable = false)
+    @Column(nullable = true)
     private String role = "ROLE_USER";
 
     @Builder.Default
-    @Column(nullable = false)
-    private boolean active = true;
+    @Column(nullable = true)
+    private Boolean active = true;
 
     @Builder.Default
-    @Column(nullable = false)
+    @Column(nullable = true)
     private String plan = "PRO";
 
     @Builder.Default
-    @Column(nullable = false)
-    private boolean moduloEstudos = true;
+    @Column(nullable = true)
+    private Boolean moduloEstudos = true;
 
     @Builder.Default
-    @Column(nullable = false)
-    private boolean moduloTreinos = true;
+    @Column(nullable = true)
+    private Boolean moduloTreinos = true;
 
     @Builder.Default
-    @Column(nullable = false)
-    private boolean moduloFinancas = true;
+    @Column(nullable = true)
+    private Boolean moduloFinancas = true;
 
     @Builder.Default
-    @Column(nullable = false)
-    private boolean moduloIaExtracao = true;
+    @Column(nullable = true)
+    private Boolean moduloIaExtracao = true;
 
     @Builder.Default
-    @Column(nullable = false)
-    private int pdfExtractCount = 0;
+    @Column(nullable = true)
+    private Integer pdfExtractCount = 0;
 
     @Builder.Default
-    @Column(nullable = false)
-    private int pdfExtractLimit = 50;
+    @Column(nullable = true)
+    private Integer pdfExtractLimit = 50;
+
+    public boolean isActive() {
+        return active == null || active;
+    }
+
+    public boolean isModuloEstudos() {
+        return moduloEstudos == null || moduloEstudos;
+    }
+
+    public boolean isModuloTreinos() {
+        return moduloTreinos == null || moduloTreinos;
+    }
+
+    public boolean isModuloFinancas() {
+        return moduloFinancas == null || moduloFinancas;
+    }
+
+    public boolean isModuloIaExtracao() {
+        return moduloIaExtracao == null || moduloIaExtracao;
+    }
+
+    public int getPdfExtractCount() {
+        return pdfExtractCount != null ? pdfExtractCount : 0;
+    }
+
+    public int getPdfExtractLimit() {
+        return pdfExtractLimit != null ? pdfExtractLimit : 50;
+    }
 }
