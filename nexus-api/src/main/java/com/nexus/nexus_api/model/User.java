@@ -25,4 +25,40 @@ public class User {
 
     @Column(nullable = false)
     private String password;
+
+    @Builder.Default
+    @Column(nullable = false)
+    private String role = "ROLE_USER";
+
+    @Builder.Default
+    @Column(nullable = false)
+    private boolean active = true;
+
+    @Builder.Default
+    @Column(nullable = false)
+    private String plan = "PRO";
+
+    @Builder.Default
+    @Column(nullable = false)
+    private boolean moduloEstudos = true;
+
+    @Builder.Default
+    @Column(nullable = false)
+    private boolean moduloTreinos = true;
+
+    @Builder.Default
+    @Column(nullable = false)
+    private boolean moduloFinancas = true;
+
+    @Builder.Default
+    @Column(nullable = false)
+    private boolean moduloIaExtracao = true;
+
+    @Builder.Default
+    @Column(nullable = false)
+    private int pdfExtractCount = 0;
+
+    @Builder.Default
+    @Column(nullable = false)
+    private int pdfExtractLimit = 50;
 }
