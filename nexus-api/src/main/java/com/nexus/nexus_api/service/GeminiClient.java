@@ -26,11 +26,12 @@ import java.util.Map;
 public class GeminiClient {
 
     private static final String BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/";
+    private static final String FALLBACK_MODEL = "gemini-3.5-flash-lite";
 
     @Value("${gemini.api.key}")
     private String apiKey;
 
-    @Value("${gemini.model}")
+    @Value("${gemini.model:gemini-3.6-flash}")
     private String model;
 
     private final HttpClient httpClient = HttpClient.newBuilder()
@@ -39,6 +40,10 @@ public class GeminiClient {
             .build();
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    public boolean isConfigured() {
+        return apiKey != null && !apiKey.isBlank();
+    }
 
     /**
      * Chama o Gemini com um system instruction opcional e uma lista de mensagens
@@ -52,20 +57,40 @@ public class GeminiClient {
                                    List<Map<String, Object>> contents,
                                    Map<String, Object> jsonSchema,
                                    int maxOutputTokens) {
-        if (apiKey == null || apiKey.isBlank()) {
+        if (!isConfigured()) {
             throw new AiServiceException(
                     HttpStatus.SERVICE_UNAVAILABLE,
                     "GEMINI_API_KEY não está configurada no servidor (variável de ambiente ausente ou vazia).");
         }
-        if (model == null || model.isBlank()) {
-            throw new AiServiceException(
-                    HttpStatus.SERVICE_UNAVAILABLE,
-                    "gemini.model não está configurado no servidor.");
-        }
 
+        String primaryModel = (model != null && !model.isBlank()) ? model : "gemini-3.6-flash";
+
+        try {
+            return doGenerateContent(primaryModel, systemInstruction, contents, jsonSchema, maxOutputTokens);
+        } catch (AiServiceException e) {
+            // Se o modelo principal falhar com 429 (rate limit) ou 404 (modelo obsoleto/não encontrado),
+            // tenta o fallback leve automático (gemini-3.5-flash-lite)
+            if (!primaryModel.equals(FALLBACK_MODEL) &&
+                    (e.getStatus() == HttpStatus.TOO_MANY_REQUESTS || e.getStatus() == HttpStatus.NOT_FOUND || e.getStatus() == HttpStatus.BAD_GATEWAY)) {
+                try {
+                    return doGenerateContent(FALLBACK_MODEL, systemInstruction, contents, jsonSchema, maxOutputTokens);
+                } catch (Exception fallbackEx) {
+                    throw e;
+                }
+            }
+            throw e;
+        }
+    }
+
+    private String doGenerateContent(String targetModel,
+                                     String systemInstruction,
+                                     List<Map<String, Object>> contents,
+                                     Map<String, Object> jsonSchema,
+                                     int maxOutputTokens) {
         Map<String, Object> generationConfig = new LinkedHashMap<>();
         generationConfig.put("maxOutputTokens", maxOutputTokens);
-        generationConfig.put("temperature", 0.4);
+        generationConfig.put("temperature", 0.2);
+
         if (jsonSchema != null) {
             generationConfig.put("responseMimeType", "application/json");
             generationConfig.put("responseSchema", jsonSchema);
@@ -78,7 +103,7 @@ public class GeminiClient {
         body.put("contents", contents);
         body.put("generationConfig", generationConfig);
 
-        String url = BASE_URL + model + ":generateContent?key=" + apiKey;
+        String url = BASE_URL + targetModel + ":generateContent?key=" + apiKey;
 
         HttpResponse<String> response;
         try {
@@ -95,16 +120,24 @@ public class GeminiClient {
             throw new AiServiceException(HttpStatus.SERVICE_UNAVAILABLE, "Falha ao conectar com a IA: " + e.getMessage(), e);
         }
 
+        if (response.statusCode() == 404) {
+            throw new AiServiceException(
+                    HttpStatus.NOT_FOUND,
+                    "Modelo Gemini não encontrado (" + targetModel + "): " + response.body());
+        }
+
         if (response.statusCode() == 429) {
             throw new AiServiceException(
                     HttpStatus.TOO_MANY_REQUESTS,
                     "Limite de uso gratuito do Gemini atingido no momento (rate limit). Aguarde alguns instantes e tente novamente.");
         }
+
         if (response.statusCode() == 401 || response.statusCode() == 403) {
             throw new AiServiceException(
                     HttpStatus.SERVICE_UNAVAILABLE,
                     "A chave da API do Gemini foi rejeitada (inválida, expirada ou sem permissão).");
         }
+
         if (response.statusCode() >= 300) {
             throw new AiServiceException(
                     HttpStatus.BAD_GATEWAY,
@@ -135,8 +168,9 @@ public class GeminiClient {
         if ("MAX_TOKENS".equals(finishReason)) {
             throw new AiServiceException(
                     HttpStatus.UNPROCESSABLE_ENTITY,
-                    "A resposta da IA foi cortada por exceder o limite de tokens de saída. Tente um texto de entrada menor.");
+                    "A resposta da IA foi cortada por exceder o limite de tokens de saída. Tente um arquivo menor ou divida o conteúdo.");
         }
+
         if ("SAFETY".equals(finishReason) || "RECITATION".equals(finishReason)) {
             throw new AiServiceException(
                     HttpStatus.UNPROCESSABLE_ENTITY,

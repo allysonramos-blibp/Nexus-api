@@ -49,7 +49,7 @@ public class PdfQuestionParserServiceTest {
                 C) Alternativa gama
                 D) Alternativa delta
                 E) Alternativa épsilon
-                
+
                 Questão 2
                 Enunciado explicativo da questão 2 sobre banco de dados.
                 A) Opção 1
@@ -60,6 +60,7 @@ public class PdfQuestionParserServiceTest {
                 """;
 
         PdfParseResult result = parser.parse(text, 1);
+
         assertEquals(2, result.questoes().size());
         assertEquals(1, result.questoes().get(0).numero());
         assertEquals(2, result.questoes().get(1).numero());
@@ -81,6 +82,7 @@ public class PdfQuestionParserServiceTest {
                 """;
 
         PdfParseResult result = parser.parse(text, 1);
+
         assertEquals(1, result.questoes().size());
         ParsedQuestion q = result.questoes().get(0);
         assertTrue(q.alternativas().get(0).contains("que continua na próxima linha"));
@@ -96,7 +98,7 @@ public class PdfQuestionParserServiceTest {
                 C. Terceira opção
                 D. Quarta opção
                 E. Quinta opção
-                
+
                 2
                 Enunciado com formato com traço.
                 A - Linha A
@@ -107,6 +109,7 @@ public class PdfQuestionParserServiceTest {
                 """;
 
         PdfParseResult result = parser.parse(text, 1);
+
         assertEquals(2, result.questoes().size());
         assertEquals(5, result.questoes().get(0).alternativas().size());
         assertEquals(5, result.questoes().get(1).alternativas().size());
@@ -120,6 +123,7 @@ public class PdfQuestionParserServiceTest {
                 """;
 
         PdfParseResult result = parser.parse(text, 1);
+
         assertTrue(result.questoes().isEmpty());
     }
 
@@ -130,7 +134,7 @@ public class PdfQuestionParserServiceTest {
                 Enunciado da questão 1 com bastante texto informativo.
                 A) Opção A
                 B) Opção B
-                
+
                 3
                 Enunciado da questão 3 com bastante texto informativo.
                 A) Opção A
@@ -138,6 +142,7 @@ public class PdfQuestionParserServiceTest {
                 """;
 
         PdfParseResult result = parser.parse(text, 1);
+
         assertEquals(2, result.questoes().size());
         assertTrue(result.numerosAusentes().contains(2));
     }
@@ -145,6 +150,7 @@ public class PdfQuestionParserServiceTest {
     @Test
     void testPdfSemTexto() {
         PdfParseResult result = parser.parse("", 0);
+
         assertFalse(result.possuiTexto());
         assertEquals(0, result.questoes().size());
     }
@@ -163,10 +169,64 @@ public class PdfQuestionParserServiceTest {
         }
 
         PdfParseResult result = parser.parse(sb.toString(), 15);
+
         assertEquals(70, result.questoes().size());
         assertEquals(1, result.questoes().get(0).numero());
         assertEquals(70, result.questoes().get(69).numero());
         assertTrue(result.numerosAusentes().isEmpty());
         assertTrue(result.numerosDuplicados().isEmpty());
+    }
+
+    @Test
+    void testProvaModularComDisciplinasEQuatroAlternativasMinusculas() {
+        String text = """
+                FISIOLOGIA III
+
+                QUESTÃO 01
+                Uma gestante de 38 semanas apresenta contrações uterinas.
+                a) Aumento da entrada de cálcio.
+                b) Estímulo à calmodulina.
+                c) Ativação da MLCK.
+                d) Inibição da MLCK.
+
+                QUESTÃO 02
+                A descoberta da esclerostina revolucionou o entendimento.
+                a) Apenas I e II estão corretas.
+                b) Apenas II e III estão corretas.
+                c) Apenas I e III estão corretas.
+                d) Todas estão corretas.
+
+                QUESTÃO 03 - Dissertativa
+                Explique o mecanismo da contração muscular uterina em detalhes técnicos.
+
+                FARMACOLOGIA I
+
+                QUESTÃO 01
+                Um paciente em uso de varfarina com cirrose hepática.
+                a) A hipoalbuminemia aumenta a ligação.
+                b) A hipoalbuminemia reduz a fração livre.
+                c) A hipoalbuminemia aumenta a fração livre.
+                d) A hipoalbuminemia não altera a farmacocinética.
+                """;
+
+        PdfParseResult result = parser.parse(text, 2);
+
+        assertEquals(4, result.questoes().size());
+        assertEquals(1, result.questoes().get(0).numero());
+        assertEquals("FISIOLOGIA III", result.questoes().get(0).disciplinaSugerida());
+        assertEquals(4, result.questoes().get(0).alternativas().size());
+
+        assertEquals(2, result.questoes().get(1).numero());
+        assertEquals("FISIOLOGIA III", result.questoes().get(1).disciplinaSugerida());
+
+        // Dissertativa
+        assertEquals(3, result.questoes().get(2).numero());
+        assertEquals("FISIOLOGIA III", result.questoes().get(2).disciplinaSugerida());
+        assertEquals(List.of("[Questão Dissertativa]"), result.questoes().get(2).alternativas());
+
+        // Farmacologia - Questão 01
+        assertEquals(1, result.questoes().get(3).numero());
+        assertEquals("FARMACOLOGIA I", result.questoes().get(3).disciplinaSugerida());
+        assertEquals(4, result.questoes().get(3).alternativas().size());
     }
 }

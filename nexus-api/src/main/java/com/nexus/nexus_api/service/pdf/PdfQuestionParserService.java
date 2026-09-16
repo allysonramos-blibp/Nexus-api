@@ -8,13 +8,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Parser determinístico e robusto de questões de múltipla escolha para provas de concursos.
+ * Parser determinístico de questões a partir de texto de PDF.
  *
- * Suporta formatos de bancos e bancas brasileiras (FGV, Cespe/Cebraspe, FCC, Vunesp, etc.):
- * - Numeração: "1", "1.", "1)", "1 -", "Questão 1", "QUESTÃO 01".
- * - Alternativas: "(A)", "A)", "A.", "A -", multilinhas e quebras de página.
- * - Limpa cabeçalhos e rodapés comuns que possam confundir a numeração de páginas com questões.
- * - Garante que questões com enunciados e pelo menos 2 alternativas sejam extraídas fielmente.
+ * Suporta:
+ * - Provas de concursos padrão (FGV, Cespe, FCC, Vunesp).
+ * - Provas acadêmicas/universitárias divididas por blocos de matérias/disciplinas (ex: UniRV, Medicina).
+ * - Questões com 4 alternativas (a, b, c, d) ou 5 alternativas (a, b, c, d, e), maiúsculas ou minúsculas.
+ * - Questões dissertativas/discursivas identificadas no corpo ou título.
  */
 @Slf4j
 @Service
@@ -22,26 +22,35 @@ public class PdfQuestionParserService {
 
     private static final String PAGE_BREAK = "[[NEXUS_PAGE_BREAK]]";
 
-    // Padrão de início de questão: linha contendo apenas o número (1 a 3 dígitos) ou "Questão X"
+    // Padrão de início de questão: "1", "01", "1.", "1)", "1 -", "Questão 1", "QUESTÃO 01", "QUESTÃO 05 - Dissertativa"
     private static final Pattern QUESTION_START = Pattern.compile(
-            "(?im)^\\s*(?:quest(?:ão|ao)\\s*)?(\\d{1,3})\\s*(?:[\\.\\)\\-:]\\s*)?$"
+            "(?im)^\\s*(?:quest(?:ão|ao)\\s*)?(\\d{1,3})\\s*(?:[\\.\\)\\-:]\\s*|\\s*-\\s*(?:dissertativa|discursiva)\\s*)?$"
     );
 
-    // Padrão de alternativa: (A), A), A., A - ou A:
+    // Alternativas com pontuação: "(A)", "(a)", "A)", "a)", "A.", "a.", "A -", "a -"
     private static final Pattern ALTERNATIVE_START = Pattern.compile(
             "(?i)^\\s*(?:\\(([A-E])\\)|([A-E])[\\)\\.\\-:])\\s*(.*)$"
     );
 
+    // Alternativas separadas por múltiplos espaços (sem pontuação explícita)
     private static final Pattern ALTERNATIVE_WITHOUT_PUNCTUATION = Pattern.compile(
-            "(?i)^\\s*([A-E])\\s{2,}(.+)$"
+            "(?i)^\\s*([A-E])\\s{2,}(.*)$"
     );
 
-    public PdfParseResult parse(String text, int pageCount) {
-        if (text == null || text.isBlank()) {
-            return new PdfParseResult(List.of(), List.of(), List.of(), List.of(), pageCount, 0, false);
+    public PdfParseResult parse(String fullText, int totalPages) {
+        if (fullText == null || fullText.isBlank()) {
+            return new PdfParseResult(
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    0,
+                    0,
+                    false
+            );
         }
 
-        String cleanedText = preprocessAndCleanHeaders(text);
+        String cleanedText = preprocessAndCleanHeaders(fullText);
         List<Marker> markers = findQuestionMarkers(cleanedText);
 
         log.info("[PDF-PARSER] Marcadores brutos encontrados: {}", markers.size());
@@ -61,35 +70,39 @@ public class PdfQuestionParserService {
             }
 
             String rawBlock = cleanedText.substring(current.start(), end);
-            ParsedQuestion question = parseBlock(current.number(), rawBlock);
+            ParsedQuestion question = parseBlock(current.number(), rawBlock, current.subject());
 
             if (question != null) {
-                if (parsedNumbers.contains(question.numero())) {
+                parsed.add(question);
+                if (!parsedNumbers.add(question.numero())) {
                     duplicates.add(question.numero());
-                } else {
-                    parsed.add(question);
-                    parsedNumbers.add(question.numero());
                 }
             } else {
                 invalid++;
             }
         }
 
-        parsed.sort(Comparator.comparing(ParsedQuestion::numero, Comparator.nullsLast(Integer::compareTo)));
-
-        List<Integer> found = parsed.stream()
+        // Ordena mantendo a sequência de aparição ou número
+        List<Integer> foundNumbers = parsed.stream()
                 .map(ParsedQuestion::numero)
-                .filter(Objects::nonNull)
                 .distinct()
                 .sorted()
                 .toList();
 
-        List<Integer> missing = findMissingNumbers(found);
+        List<Integer> missingNumbers = findMissingNumbers(foundNumbers);
 
         log.info("[PDF-PARSER] Resultado: {} questões extraídas, {} inválidas, {} ausentes, {} duplicadas",
-                parsed.size(), invalid, missing, duplicates);
+                parsed.size(), invalid, missingNumbers, duplicates);
 
-        return new PdfParseResult(parsed, found, missing, duplicates, pageCount, invalid, !cleanedText.isBlank());
+        return new PdfParseResult(
+                List.copyOf(parsed),
+                foundNumbers,
+                missingNumbers,
+                duplicates,
+                totalPages,
+                invalid,
+                true
+        );
     }
 
     private String preprocessAndCleanHeaders(String text) {
@@ -104,13 +117,18 @@ public class PdfQuestionParserService {
         for (String line : lines) {
             String trimmed = line.trim();
 
-            // Ignora linhas de rodapé com paginação explícita para evitar confundir número de página com questão
-            // Ex: "PÁGINA 3", "Página 14 de 20", "TIPO AMARELA – PÁGINA 3"
+            // Ignora marcas d'água de scanners de celular (CamScanner, etc)
+            if (trimmed.matches("(?i).*digitalizado com camscanner.*") ||
+                trimmed.matches("(?i).*scanned with camscanner.*")) {
+                continue;
+            }
+
+            // Ignora linhas de rodapé com paginação explícita para evitar confundir com questão
             if (trimmed.matches("(?i).*P[AÁ]GINA\\s+\\d+.*") || trimmed.matches("(?i).*PAGE\\s+\\d+.*")) {
                 continue;
             }
 
-            // Remove repetições de cabeçalhos de provas formais
+            // Remove repetições de cabeçalhos formais de provas
             if (trimmed.matches("(?i)^EMPRESA DE TECNOLOGIA.*FGV CONHECIMENTO.*$") ||
                 trimmed.matches("(?i)^FGV CONHECIMENTO.*$") ||
                 trimmed.matches("(?i)^CONCURSO P[UÚ]BLICO.*$")) {
@@ -125,44 +143,83 @@ public class PdfQuestionParserService {
 
     private List<Marker> findQuestionMarkers(String text) {
         List<Marker> result = new ArrayList<>();
-        Matcher matcher = QUESTION_START.matcher(text);
+        String[] lines = text.split("\\n", -1);
 
-        while (matcher.find()) {
-            int number;
-            try {
-                number = Integer.parseInt(matcher.group(1));
-            } catch (NumberFormatException e) {
-                continue;
+        String currentSubject = null;
+        int currentOffset = 0;
+
+        for (String line : lines) {
+            String trimmed = line.trim();
+
+            // Verifica se a linha é um cabeçalho de matéria/disciplina
+            if (isSubjectHeader(trimmed)) {
+                currentSubject = trimmed;
             }
 
-            if (number < 1 || number > 300) continue;
+            Matcher matcher = QUESTION_START.matcher(line);
+            if (matcher.matches()) {
+                int number;
+                try {
+                    number = Integer.parseInt(matcher.group(1));
+                } catch (NumberFormatException e) {
+                    currentOffset += line.length() + 1;
+                    continue;
+                }
 
-            // Verificar se o conteúdo que segue possui indicativo de questão (enunciado + alternativas)
-            String after = text.substring(matcher.end());
-            if (hasPlausibleQuestionContent(after)) {
-                result.add(new Marker(number, matcher.start(), matcher.end()));
+                if (number >= 1 && number <= 300) {
+                    int markerStart = currentOffset + matcher.start(1);
+                    int markerEnd = currentOffset + line.length();
+
+                    String after = (markerEnd < text.length()) ? text.substring(markerEnd) : "";
+                    if (hasPlausibleQuestionContent(after)) {
+                        result.add(new Marker(number, currentOffset, markerEnd, currentSubject));
+                    }
+                }
             }
+
+            currentOffset += line.length() + 1;
         }
 
         return result;
+    }
+
+    private boolean isSubjectHeader(String trimmed) {
+        if (trimmed.length() < 3 || trimmed.length() > 50) return false;
+
+        // Não é cabeçalho se for termo administrativo da prova
+        if (trimmed.matches("(?i)^(?:quest(?:ão|ao)|p[aá]gina|page|nome|data|instruç|avaliaç|campus|universidade|faculdade|gabarito|caderno).*")) {
+            return false;
+        }
+
+        // Deve conter letras e não terminar com pontuação de frase
+        boolean hasLetters = trimmed.chars().anyMatch(Character::isLetter);
+        boolean endsWithPunct = trimmed.endsWith(".") || trimmed.endsWith("?") || trimmed.endsWith(":") || trimmed.endsWith(",");
+
+        if (!hasLetters || endsWithPunct) return false;
+
+        // Padrão típico de cabeçalho: "FISIOLOGIA III", "FARMACOLOGIA I", "DIREITO PENAL", etc.
+        return trimmed.matches("(?i)^[A-ZÁÉÍÓÚÂÊÔÃÕÇ\\s\\-\\dIVXLCDM]+$");
     }
 
     private boolean hasPlausibleQuestionContent(String after) {
         String sample = after.replace(PAGE_BREAK, " ").strip();
         if (sample.length() < 15) return false;
 
-        // Procura se em até 4000 caracteres existe uma alternativa (A) ou A)
         int checkLimit = Math.min(sample.length(), 4000);
         String window = sample.substring(0, checkLimit);
 
-        return window.matches("(?is).*\\b(?:\\(?[A-E][\\)\\.\\-:]|[A-E]\\s{2,}).*");
+        // Verifica se há alternativas (A-E ou a-e) ou indicação de dissertativa
+        if (window.matches("(?is).*\\b(?:\\(?[A-Ea-e][\\)\\.\\-:]|[A-Ea-e]\\s{2,}).*")) {
+            return true;
+        }
+
+        return window.matches("(?is).*\\b(?:dissertativa|discursiva|responder em linhas).*");
     }
 
-    private ParsedQuestion parseBlock(int number, String rawBlock) {
+    private ParsedQuestion parseBlock(int number, String rawBlock, String subject) {
         String body = rawBlock;
 
-        // Remove o prefixo do número inicial
-        Matcher questionPrefix = Pattern.compile("(?is)^\\s*(?:quest(?:ão|ao)\\s*)?" + number + "(?:\\s*[\\.\\)\\-:]\\s*|\\s*)").matcher(body);
+        Matcher questionPrefix = Pattern.compile("(?is)^\\s*(?:quest(?:ão|ao)\\s*)?" + number + "(?:\\s*[\\.\\)\\-:]\\s*|\\s*-\\s*(?:dissertativa|discursiva)\\s*|\\s*)").matcher(body);
         if (questionPrefix.find()) {
             body = body.substring(questionPrefix.end());
         }
@@ -171,7 +228,24 @@ public class PdfQuestionParserService {
         if (body.isBlank()) return null;
 
         List<AlternativeMarker> alternatives = findAlternatives(body);
+
+        // Se encontrou menos de 2 alternativas, verifica se é uma questão dissertativa
         if (alternatives.size() < 2) {
+            String lower = rawBlock.toLowerCase();
+            if (lower.contains("dissertativa") || lower.contains("discursiva") || lower.contains("responder em")) {
+                String enunciadoDissertativa = cleanContent(body);
+                if (enunciadoDissertativa.length() >= 5) {
+                    return new ParsedQuestion(
+                            number,
+                            enunciadoDissertativa,
+                            List.of("[Questão Dissertativa]"),
+                            rawBlock.strip(),
+                            -1,
+                            -1,
+                            subject
+                    );
+                }
+            }
             return null;
         }
 
@@ -197,7 +271,8 @@ public class PdfQuestionParserService {
                 List.copyOf(optionTexts),
                 rawBlock.strip(),
                 -1,
-                -1
+                -1,
+                subject
         );
     }
 
@@ -277,6 +352,6 @@ public class PdfQuestionParserService {
         return List.copyOf(missing);
     }
 
-    private record Marker(int number, int start, int end) {}
+    private record Marker(int number, int start, int end, String subject) {}
     private record AlternativeMarker(String label, int start, int contentStart) {}
 }
