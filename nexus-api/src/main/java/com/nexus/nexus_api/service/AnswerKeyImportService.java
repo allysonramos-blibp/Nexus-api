@@ -1,0 +1,124 @@
+package com.nexus.nexus_api.service;
+
+import com.nexus.nexus_api.dto.AnswerKeyImportResponse;
+import com.nexus.nexus_api.model.Question;
+import com.nexus.nexus_api.model.StudyPlan;
+import com.nexus.nexus_api.repository.QuestionRepository;
+import com.nexus.nexus_api.service.pdf.AnswerKeyParseResult;
+import com.nexus.nexus_api.service.pdf.PdfAnswerKeyParserService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+import java.util.*;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class AnswerKeyImportService {
+
+    private final StudyPlanService studyPlanService;
+    private final QuestionRepository questionRepository;
+    private final PdfAnswerKeyParserService answerKeyParserService;
+
+    @Transactional
+    public AnswerKeyImportResponse importAnswerKey(Long planId, MultipartFile file) {
+        // Valida que o plano existe e pertence ao usuário logado
+        StudyPlan plan = studyPlanService.findByIdOwnedByCurrentUser(planId);
+
+        String text = extractText(file);
+        AnswerKeyParseResult parseResult = answerKeyParserService.parse(text);
+
+        if (parseResult.totalEncontrado() == 0) {
+            throw new IllegalStateException("Nenhum gabarito pôde ser extraído do documento enviado.");
+        }
+
+        // Buscar todas as questões associadas ao plano
+        List<Question> questions = questionRepository.findByTopicSubjectStudyPlanId(plan.getId());
+        Map<Integer, Question> questionsByNumber = new HashMap<>();
+
+        for (Question q : questions) {
+            if (q.getNumero() != null) {
+                questionsByNumber.put(q.getNumero(), q);
+            }
+        }
+
+        int updatedCount = 0;
+        List<Integer> semCorrespondencia = new ArrayList<>();
+
+        // Atualizar respostas por número
+        for (Map.Entry<Integer, String> entry : parseResult.respostasPorNumero().entrySet()) {
+            Integer num = entry.getKey();
+            String resposta = entry.getValue();
+
+            Question q = questionsByNumber.get(num);
+            if (q != null) {
+                q.setGabarito(resposta);
+                questionRepository.save(q);
+                updatedCount++;
+            } else {
+                semCorrespondencia.add(num);
+            }
+        }
+
+        // Tratar questões anuladas
+        for (Integer numAnulada : parseResult.anuladas()) {
+            Question q = questionsByNumber.get(numAnulada);
+            if (q != null) {
+                q.setGabarito("*"); // Convenção de questão anulada
+                if (q.getExplicacao() == null || q.getExplicacao().isBlank()) {
+                    q.setExplicacao("Questão anulada pela banca examinadora.");
+                }
+                questionRepository.save(q);
+                updatedCount++;
+            } else {
+                semCorrespondencia.add(numAnulada);
+            }
+        }
+
+        // Identificar se há questões do plano que não vieram no gabarito
+        List<Integer> ausentesNoGabarito = new ArrayList<>();
+        for (Integer numQ : questionsByNumber.keySet()) {
+            if (!parseResult.respostasPorNumero().containsKey(numQ) && !parseResult.anuladas().contains(numQ)) {
+                ausentesNoGabarito.add(numQ);
+            }
+        }
+        Collections.sort(ausentesNoGabarito);
+        Collections.sort(semCorrespondencia);
+
+        log.info("[GABARITO] Plano {}: {} encontrados, {} atualizados, {} sem correspondência, {} ausentes no gabarito",
+                planId, parseResult.totalEncontrado(), updatedCount, semCorrespondencia.size(), ausentesNoGabarito.size());
+
+        return new AnswerKeyImportResponse(
+                parseResult.totalEncontrado(),
+                updatedCount,
+                semCorrespondencia,
+                ausentesNoGabarito,
+                parseResult.anuladas(),
+                parseResult.numerosDuplicados()
+        );
+    }
+
+    private String extractText(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("Envie um arquivo PDF de gabarito para importar.");
+        }
+        try (PDDocument document = Loader.loadPDF(file.getBytes())) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setSortByPosition(false);
+            String text = stripper.getText(document);
+            if (text == null || text.isBlank()) {
+                throw new IllegalStateException("O PDF de gabarito não possui texto selecionável.");
+            }
+            return text;
+        } catch (IOException e) {
+            throw new IllegalStateException("Não foi possível ler o arquivo PDF do gabarito: " + e.getMessage(), e);
+        }
+    }
+}
