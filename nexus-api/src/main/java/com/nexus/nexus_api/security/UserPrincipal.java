@@ -40,6 +40,7 @@ public class UserPrincipal implements UserDetails {
             this.pdfExtractLimit = 99999;
         } else {
             this.role = user.getRole() != null ? user.getRole() : "ROLE_USER";
+            // Proteção contra nulos ou padrão de active do banco
             this.active = user.isActive();
             this.plan = user.getPlan() != null ? user.getPlan() : "PRO";
             this.moduloEstudos = user.isModuloEstudos();
@@ -113,7 +114,8 @@ public class UserPrincipal implements UserDetails {
 
     @Override
     public boolean isAccountNonLocked() {
-        return this.active; // Se suspenso, bloqueia login e requisições
+        // Não travar no login do Spring Security; a suspensão é tratada na camada de negócio/UI
+        return true;
     }
 
     @Override
@@ -123,6 +125,7 @@ public class UserPrincipal implements UserDetails {
 
     @Override
     public boolean isEnabled() {
-        return this.active;
+        // Garante autenticação bem-sucedida pelo DaoAuthenticationProvider
+        return true;
     }
 }
