@@ -80,7 +80,6 @@ public class PdfAnswerKeyParserServiceTest {
         assertEquals("E", result.respostasPorNumero().get(5));
         assertEquals("B", result.respostasPorNumero().get(40));
     }
-}
 
     @Test
     void testIsolarProvaTipo3Dataprev() {
@@ -104,10 +103,10 @@ public class PdfAnswerKeyParserServiceTest {
 
         AnswerKeyParseResult result = parser.parse(fullDocument, "TIPO 3");
         assertEquals(5, result.totalEncontrado());
-        // Deve bater exatamente com a Tipo 3: C C E D E
         assertEquals("C", result.respostasPorNumero().get(1));
         assertEquals("C", result.respostasPorNumero().get(2));
         assertEquals("E", result.respostasPorNumero().get(3));
         assertEquals("D", result.respostasPorNumero().get(4));
         assertEquals("E", result.respostasPorNumero().get(5));
     }
+}
