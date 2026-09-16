@@ -28,18 +28,35 @@ public class AnswerKeyImportService {
     private final PdfAnswerKeyParserService answerKeyParserService;
 
     @Transactional
-    public AnswerKeyImportResponse importAnswerKey(Long planId, MultipartFile file) {
-        // Valida que o plano existe e pertence ao usuário logado
+    public AnswerKeyImportResponse importAnswerKey(Long planId, MultipartFile file, String targetFilter) {
+        // Valida propriedade do plano
         StudyPlan plan = studyPlanService.findByIdOwnedByCurrentUser(planId);
 
         String text = extractText(file);
-        AnswerKeyParseResult parseResult = answerKeyParserService.parse(text);
-
-        if (parseResult.totalEncontrado() == 0) {
-            throw new IllegalStateException("Nenhum gabarito pôde ser extraído do documento enviado.");
+        
+        // Se o usuário não passou filtro explícito, tentamos inferir do nome do plano
+        // Por exemplo se o plano se chama "Dataprev - Prova Tipo 3" ou "ATI Tipo 3", busca "TIPO 3"
+        String activeFilter = targetFilter;
+        if ((activeFilter == null || activeFilter.isBlank()) && plan.getNome() != null) {
+            String planName = plan.getNome();
+            if (planName.toLowerCase().contains("tipo 3") || planName.toLowerCase().contains("amarela")) {
+                activeFilter = "tipo 3";
+            } else if (planName.toLowerCase().contains("tipo 1") || planName.toLowerCase().contains("branca")) {
+                activeFilter = "tipo 1";
+            } else if (planName.toLowerCase().contains("tipo 2") || planName.toLowerCase().contains("verde")) {
+                activeFilter = "tipo 2";
+            } else if (planName.toLowerCase().contains("tipo 4") || planName.toLowerCase().contains("azul")) {
+                activeFilter = "tipo 4";
+            }
         }
 
-        // Buscar todas as questões associadas ao plano
+        AnswerKeyParseResult parseResult = answerKeyParserService.parse(text, activeFilter);
+
+        if (parseResult.totalEncontrado() == 0) {
+            throw new IllegalStateException("Nenhum gabarito pôde ser extraído para o caderno/tipo selecionado (" + (activeFilter != null ? activeFilter : "todos") + ").");
+        }
+
+        // Buscar todas as questões do plano
         List<Question> questions = questionRepository.findByTopicSubjectStudyPlanId(plan.getId());
         Map<Integer, Question> questionsByNumber = new HashMap<>();
 
@@ -52,7 +69,7 @@ public class AnswerKeyImportService {
         int updatedCount = 0;
         List<Integer> semCorrespondencia = new ArrayList<>();
 
-        // Atualizar respostas por número
+        // Atualizar respostas por número exato da questão
         for (Map.Entry<Integer, String> entry : parseResult.respostasPorNumero().entrySet()) {
             Integer num = entry.getKey();
             String resposta = entry.getValue();
@@ -67,13 +84,13 @@ public class AnswerKeyImportService {
             }
         }
 
-        // Tratar questões anuladas
+        // Tratar questões anuladas (*)
         for (Integer numAnulada : parseResult.anuladas()) {
             Question q = questionsByNumber.get(numAnulada);
             if (q != null) {
-                q.setGabarito("*"); // Convenção de questão anulada
+                q.setGabarito("*");
                 if (q.getExplicacao() == null || q.getExplicacao().isBlank()) {
-                    q.setExplicacao("Questão anulada pela banca examinadora.");
+                    q.setExplicacao("Questão anulada pela banca examinadora no gabarito oficial.");
                 }
                 questionRepository.save(q);
                 updatedCount++;
@@ -82,7 +99,7 @@ public class AnswerKeyImportService {
             }
         }
 
-        // Identificar se há questões do plano que não vieram no gabarito
+        // Detectar se alguma questão cadastrada no plano não veio no gabarito
         List<Integer> ausentesNoGabarito = new ArrayList<>();
         for (Integer numQ : questionsByNumber.keySet()) {
             if (!parseResult.respostasPorNumero().containsKey(numQ) && !parseResult.anuladas().contains(numQ)) {
@@ -92,8 +109,8 @@ public class AnswerKeyImportService {
         Collections.sort(ausentesNoGabarito);
         Collections.sort(semCorrespondencia);
 
-        log.info("[GABARITO] Plano {}: {} encontrados, {} atualizados, {} sem correspondência, {} ausentes no gabarito",
-                planId, parseResult.totalEncontrado(), updatedCount, semCorrespondencia.size(), ausentesNoGabarito.size());
+        log.info("[GABARITO] Plano {} (filtro '{}'): {} encontrados, {} atualizados, {} sem correspondência, {} ausentes",
+                planId, activeFilter, parseResult.totalEncontrado(), updatedCount, semCorrespondencia.size(), ausentesNoGabarito.size());
 
         return new AnswerKeyImportResponse(
                 parseResult.totalEncontrado(),

@@ -8,44 +8,63 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Parser determinístico de gabaritos oficiais em PDF.
+ * Parser determinístico de gabaritos oficiais em PDF com suporte a múltiplos cargos/tipos de prova.
  *
- * Reconhece tabelas, listas e grades com formatos comuns de bancas:
- * 1 A  |  1. A  |  1) A  |  01 - A  |  1: A
- * e também questões anuladas:
- * 17 *  |  17 X  |  17 #  |  17 ANULADA
- *
- * O gabarito é associado SEMPRE pelo número da questão, nunca pelo índice da lista.
+ * Suporta:
+ * 1. Filtragem inteligente por título/bloco de cargo ou tipo de prova (ex: "ATI - DESENVOLVIMENTO DE SOFTWARE - PROVA TIPO 3", "TIPO 3", "AMARELA").
+ * 2. Tabelas compactas estilo FGV (linha de números 1..20 seguida de linha de letras A..E / *).
+ * 3. Formato por pares chave-valor: "1 A", "01 - A", "1. A", "17 *".
+ * 4. Listagem de seções encontradas no PDF caso o usuário queira escolher na interface.
  */
 @Slf4j
 @Service
 public class PdfAnswerKeyParserService {
 
-    // Padrão 1: linha com "1 A" ou "1 - A" ou "1. A" ou "Questão 1: A" ou "17 *"
     private static final Pattern PAIR_PATTERN = Pattern.compile(
             "(?i)(?:quest[aã]o\\s*)?(\\d{1,3})\\s*(?:[\\.\\)\\-:]\\s*)?\\s*([A-E]|\\*|X|#|ANULADA)",
             Pattern.CASE_INSENSITIVE
     );
 
-    // Padrão 2: linha de cabeçalho de números seguida de linha de letras (comum em gabaritos FGV / Cespe)
-    // Ex: 1 2 3 4 5 6 7 8 9 10
-    //     A B C D E A B C D E
+    /**
+     * Lista todos os títulos de cargos/cadernos de gabarito encontrados no documento.
+     * Ex: "ATI - DESENVOLVIMENTO DE SOFTWARE – PROVA TIPO 3"
+     */
+    public List<String> listSections(String text) {
+        if (text == null || text.isBlank()) return List.of();
+        List<String> sections = new ArrayList<>();
+        String[] lines = text.split("\\r?\\n");
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (isSectionHeader(trimmed)) {
+                sections.add(trimmed);
+            }
+        }
+        return sections;
+    }
 
     public AnswerKeyParseResult parse(String text) {
+        return parse(text, null);
+    }
+
+    public AnswerKeyParseResult parse(String text, String targetFilter) {
         if (text == null || text.isBlank()) {
             return new AnswerKeyParseResult(Map.of(), List.of(), 0, 0, List.of());
         }
+
+        // Se foi especificado um filtro (ex: "TIPO 3", "DESENVOLVIMENTO DE SOFTWARE"),
+        // isolamos apenas a região correspondente a esse bloco no PDF.
+        String relevantText = isolateSection(text, targetFilter);
 
         Map<Integer, String> respostas = new TreeMap<>();
         Set<Integer> anuladas = new TreeSet<>();
         Set<Integer> duplicados = new TreeSet<>();
 
-        // 1. Tentar detectar tabelas compactas estilo FGV (linha de números seguida de linha de letras)
-        boolean detectedTable = parseTableGrid(text, respostas, anuladas, duplicados);
+        // 1. Detecção de grade FGV (linha de números seguida de linha de respostas)
+        boolean detectedTable = parseTableGrid(relevantText, respostas, anuladas, duplicados);
 
-        // 2. Se encontrou poucos resultados ou nenhum por grid, roda varredura por pares
+        // 2. Se encontrou poucos resultados ou nenhum por grid, varre por pares
         if (respostas.size() < 10) {
-            parsePairs(text, respostas, anuladas, duplicados);
+            parsePairs(relevantText, respostas, anuladas, duplicados);
         }
 
         return new AnswerKeyParseResult(
@@ -55,6 +74,59 @@ public class PdfAnswerKeyParserService {
                 anuladas.size(),
                 new ArrayList<>(duplicados)
         );
+    }
+
+    private boolean isSectionHeader(String line) {
+        // Títulos no estilo: "ATI - DESENVOLVIMENTO DE SOFTWARE – PROVA TIPO 3" ou "CARGO X – PROVA TIPO 1"
+        return line.matches("(?i).*PROVA\\s+TIPO\\s+\\d+.*") ||
+               (line.matches("(?i).*(ANALISTA|TÉCNICO|TECNICO|ENGENHEIRO|MEDICO|MÉDICO|ATI|ADVOCA|CONTABIL).*") 
+                && line.length() > 10 && line.length() < 120);
+    }
+
+    private String isolateSection(String text, String targetFilter) {
+        if (targetFilter == null || targetFilter.isBlank()) {
+            return text;
+        }
+
+        String filterNorm = targetFilter.trim().toLowerCase();
+        String[] lines = text.split("\\r?\\n");
+        StringBuilder sb = new StringBuilder();
+        boolean insideTargetSection = false;
+
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i].trim();
+            if (isSectionHeader(line)) {
+                // Checa se essa linha bate com o filtro desejado
+                String lineLower = line.toLowerCase();
+                if (matchesFilter(lineLower, filterNorm)) {
+                    insideTargetSection = true;
+                    sb.append(line).append("\n");
+                    continue;
+                } else if (insideTargetSection) {
+                    // Começou outra seção diferente, encerra o bloco
+                    break;
+                }
+            }
+
+            if (insideTargetSection) {
+                sb.append(lines[i]).append("\n");
+            }
+        }
+
+        // Se o filtro encontrou o bloco, retorna apenas ele; caso contrário, usa o texto todo
+        return sb.length() > 0 ? sb.toString() : text;
+    }
+
+    private boolean matchesFilter(String lineLower, String filterNorm) {
+        // Ex: se filterNorm for "tipo 3", bate se contiver "tipo 3"
+        // Se filterNorm tiver múltiplas palavras (ex: "desenvolvimento tipo 3"), checa todas
+        String[] tokens = filterNorm.split("\\s+");
+        for (String t : tokens) {
+            if (!lineLower.contains(t)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private boolean parseTableGrid(String text, Map<Integer, String> respostas, Set<Integer> anuladas, Set<Integer> duplicados) {
@@ -101,7 +173,7 @@ public class PdfAnswerKeyParserService {
                         }
                         found++;
                     }
-                    i++; // Pula a linha de resposta consumida
+                    i++; // Pula a linha de respostas consumida
                 }
             }
         }

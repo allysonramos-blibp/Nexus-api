@@ -30,7 +30,6 @@ public class PlanQuestionController {
 
     @PostMapping(value = "/extract-pdf", consumes = "multipart/form-data")
     public PlanPdfExtractionResponse extractFromPdf(@PathVariable Long planId, @RequestParam("file") MultipartFile file) {
-        // findByIdOwnedByCurrentUser já barra com 403 se o plano não for do usuário autenticado.
         StudyPlan plan = studyPlanService.findByIdOwnedByCurrentUser(planId);
         return groupingService.extractAndGroup(plan, file);
     }
@@ -42,7 +41,11 @@ public class PlanQuestionController {
     }
 
     @PostMapping(value = "/import-gabarito", consumes = "multipart/form-data")
-    public AnswerKeyImportResponse importAnswerKey(@PathVariable Long planId, @RequestParam("file") MultipartFile file) {
-        return answerKeyImportService.importAnswerKey(planId, file);
+    public AnswerKeyImportResponse importAnswerKey(
+            @PathVariable Long planId,
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "tipoProva", required = false) String tipoProva
+    ) {
+        return answerKeyImportService.importAnswerKey(planId, file, tipoProva);
     }
 }

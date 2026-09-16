@@ -81,3 +81,33 @@ public class PdfAnswerKeyParserServiceTest {
         assertEquals("B", result.respostasPorNumero().get(40));
     }
 }
+
+    @Test
+    void testIsolarProvaTipo3Dataprev() {
+        String fullDocument = """
+                ATI - DESENVOLVIMENTO DE SOFTWARE – PROVA TIPO 1
+                1 2 3 4 5
+                A B C D E
+                
+                ATI - DESENVOLVIMENTO DE SOFTWARE – PROVA TIPO 2
+                1 2 3 4 5
+                E D C B A
+                
+                ATI - DESENVOLVIMENTO DE SOFTWARE – PROVA TIPO 3
+                1 2 3 4 5
+                C C E D E
+                
+                ATI - DESENVOLVIMENTO DE SOFTWARE – PROVA TIPO 4
+                1 2 3 4 5
+                A A B B C
+                """;
+
+        AnswerKeyParseResult result = parser.parse(fullDocument, "TIPO 3");
+        assertEquals(5, result.totalEncontrado());
+        // Deve bater exatamente com a Tipo 3: C C E D E
+        assertEquals("C", result.respostasPorNumero().get(1));
+        assertEquals("C", result.respostasPorNumero().get(2));
+        assertEquals("E", result.respostasPorNumero().get(3));
+        assertEquals("D", result.respostasPorNumero().get(4));
+        assertEquals("E", result.respostasPorNumero().get(5));
+    }
