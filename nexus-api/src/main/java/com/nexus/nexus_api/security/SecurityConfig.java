@@ -32,10 +32,6 @@ public class SecurityConfig {
     private final RestAuthenticationEntryPoint restAuthenticationEntryPoint;
     private final RestAccessDeniedHandler restAccessDeniedHandler;
 
-    // Lista separada por vírgula — o valor de verdade vem de application.properties
-    // (cors.allowed-origins=${CORS_ALLOWED_ORIGINS:...}), que por sua vez lê a variável
-    // de ambiente CORS_ALLOWED_ORIGINS do Render. O padrão abaixo só entra em cena se a
-    // property nem existir no properties (não deveria acontecer, mas é uma rede de segurança).
     @Value("${cors.allowed-origins:http://localhost:5173}")
     private String allowedOriginsRaw;
 
@@ -56,10 +52,6 @@ public class SecurityConfig {
         return config.getAuthenticationManager();
     }
 
-    /**
-     * Política de CORS explícita: origens vêm de `cors.allowed-origins`
-     * (variável de ambiente CORS_ALLOWED_ORIGINS), não mais hardcoded.
-     */
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         List<String> allowedOrigins = Arrays.stream(allowedOriginsRaw.split(","))
@@ -81,7 +73,7 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
-                .csrf(csrf -> csrf.disable()) // API stateless com JWT em header: sem cookies de sessão, CSRF não se aplica
+                .csrf(csrf -> csrf.disable()) // API stateless com JWT em header: sem cookies de sessão
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .exceptionHandling(handling -> handling
@@ -91,8 +83,10 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         // Preflight CORS sempre liberado
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        // Endpoints públicos: cadastro, login e healthcheck de auth
+                        // Endpoints públicos: cadastro, login, healthcheck e redefinição de senha
                         .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/auth/forgot-password").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/auth/reset-password").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/auth").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/users/register").permitAll()
                         // Tudo mais exige token válido
